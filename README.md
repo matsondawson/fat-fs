@@ -74,11 +74,9 @@ set to:
   names in both directions. It only runs when dosfstools and mtools are
   installed (`pacman -S dosfstools mtools`).
 
-GitHub Actions (`.github/workflows/ci.yml`) runs all of this with gcc and clang,
-builds the Pico and Pico 2 firmware, and builds the library for Cortex-M0+ and
-M4 in every option combination. The workflow runs on every pull request. Making
-the `CI result` check required in the branch protection rules blocks merging
-until it passes.
+There is no CI service: run the tests locally before merging, with gcc and with
+clang (`CC=clang CXX=clang++`, `-DCMAKE_COMPILE_WARNING_AS_ERROR=ON` for both),
+and build the Pico firmware and the Cortex-M library as below.
 
 Nothing touches a real drive. To try the driver by hand, use an image:
 
