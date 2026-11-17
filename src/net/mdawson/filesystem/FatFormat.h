@@ -1,6 +1,7 @@
 #ifndef net_mdawson_filesystems_FatFormat
 #define net_mdawson_filesystems_FatFormat
 
+#include "net/mdawson/filesystem/Fat.h"
 #include "net/mdawson/filesystem/SectorDevice.h"
 
 namespace Mfs {
@@ -18,6 +19,22 @@ namespace Mfs {
 	 */
 	void formatFat32(SectorDevice &device, sector_t sectorCount, uint8_t sectorsPerCluster = 0,
 	                 const char *label = 0, uint32_t volumeId = 0x4D465321);
+
+	/**
+	 * Format sectors [0, sectorCount) of device as a FAT12, FAT16 or FAT32 volume.
+	 * FAT32 is formatFat32(). FAT12 and FAT16 need MFS_FAT12_16 (otherwise mdError is
+	 * Fat_Fat12FormatUnsupported / Fat_Fat16FormatUnsupported) and use 1 reserved
+	 * sector, 2 FATs and a 512 entry root directory.
+	 *
+	 * @param sectorsPerCluster 1..64 (power of two), or 0 for the smallest size that
+	 *        keeps the cluster count within the type's limit (FAT12: under 4085,
+	 *        FAT16: 4085 to 65524).
+	 *
+	 * Sets mdError on failure: Fat_formatVolumeTooSmall or Fat_formatVolumeTooLarge
+	 * when the cluster count doesn't suit the type.
+	 */
+	void formatFat(SectorDevice &device, sector_t sectorCount, FatFormat_e format, uint8_t sectorsPerCluster = 0,
+	               const char *label = 0, uint32_t volumeId = 0x4D465321);
 }
 
 #endif

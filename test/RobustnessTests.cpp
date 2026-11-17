@@ -14,9 +14,42 @@ static md_error_t patchSector(SectorDevice &device, sector_t sector, uint32_t of
 	return device.write(buffer, sector);
 }
 
-/** Set a FAT entry directly in the first FAT, bypassing the driver. */
+/** Set a FAT entry directly in the first FAT of a volume made by Volume, bypassing the driver. */
 static md_error_t setRawFatEntry(SectorDevice &device, cluster_t cluster, uint32_t value) {
-	return patchSector(device, RESERVED_SECTORS + (cluster >> 7), (cluster & 127) * 4, &value, 4);
+	switch (g_config.format) {
+	case Format_FAT16: {
+		uint16_t entry = (uint16_t)value;
+		return patchSector(device, 1 + (cluster >> 8), (cluster & 255) * 2, &entry, 2);
+	}
+	case Format_FAT12: {
+		// The entry's two bytes, either of which may be in the next sector
+		uint32_t offset = cluster + (cluster >> 1);
+		uint8_t pair[2];
+		for (int i = 0; i < 2; i++) {
+			uint8_t buffer[512];
+			if (md_error_t error = device.read(buffer, 1 + (offset + i) / 512)) return error;
+			pair[i] = buffer[(offset + i) % 512];
+		}
+		uint32_t old = pair[0] | (uint32_t)pair[1] << 8;
+		uint32_t merged = (cluster & 1) ? (old & 0x000F) | ((value & 0xFFF) << 4) : (old & 0xF000) | (value & 0xFFF);
+		for (int i = 0; i < 2; i++) {
+			uint8_t byte = (uint8_t)(merged >> (8 * i));
+			if (md_error_t error = patchSector(device, 1 + (offset + i) / 512, (offset + i) % 512, &byte, 1)) return error;
+		}
+		return 0;
+	}
+	default:
+		return patchSector(device, RESERVED_SECTORS + (cluster >> 7), (cluster & 127) * 4, &value, 4);
+	}
+}
+
+/** The FAT entry marking a bad cluster: not free, and not part of any chain. */
+static uint32_t badCluster() {
+	switch (g_config.format) {
+	case Format_FAT12: return 0xFF7;
+	case Format_FAT16: return 0xFFF7;
+	default: return 0x0FFFFFF7;
+	}
 }
 
 static cluster_t firstClusterOf(Fat &fat, const char *path, const char *name) {
@@ -81,23 +114,32 @@ static void test_cluster_loop_in_directory_is_detected() {
 	}
 	Volume v;
 	CHECK_OK();
-	// Fill the root directory's single cluster so there is no end marker, then make
-	// the root cluster point at itself.
+	// Fill a directory's single cluster so there is no end marker, then make the
+	// cluster point at itself. FAT32's root directory is a chain; the fixed FAT12/16
+	// one isn't, so there a subdirectory is used.
+	const bool chainedRoot = rootDirectoryClusters() != 0;
+	const char *path = chainedRoot ? "/" : "/LOOPDIR";
+	int files = 16;
+	if (!chainedRoot) {
+		makeDirectory(*v.fat, "/", "LOOPDIR");
+		CHECK_OK();
+		files -= 2; // "." and ".."
+	}
 	char name[13];
-	for (int i = 0; i < 16; i++) {
+	for (int i = 0; i < files; i++) {
 		snprintf(name, sizeof(name), "F%02d", i);
-		File file(*v.fat, "/", name, true);
+		File file(*v.fat, path, name, true);
 		CHECK_OK();
 	}
 	v.fat->flush();
-	cluster_t root = v.fat->getRootDirectoryCluster();
-	CHECK_EQ(setRawFatEntry(v.disk.device(), root, root), 0);
+	cluster_t directory = chainedRoot ? v.fat->getRootDirectoryCluster() : firstClusterOf(*v.fat, "/", "LOOPDIR");
+	CHECK_EQ(setRawFatEntry(v.disk.device(), directory, directory), 0);
 	v.remount();
 	CHECK_OK();
 
-	CHECK_EQ(countEntries(*v.fat, "/"), -1);
+	CHECK_EQ(countEntries(*v.fat, path), -1);
 	CHECK_EQ(mdError, Chain_loopDetected);
-	File missing(*v.fat, "/", "NOPE");
+	File missing(*v.fat, path, "NOPE");
 	CHECK_EQ(mdError, Chain_loopDetected);
 }
 
@@ -133,18 +175,27 @@ static void test_disk_full() {
 	CHECK_OK();
 	// Mark every cluster used except three, by writing the FAT directly.
 	uint32_t clusters = v.fat->getClusterCount();
-	uint32_t fatSectors = (clusters + 2 + 127) / 128;
-	uint8_t buffer[512];
-	for (uint32_t s = 0; s < fatSectors; s++) {
-		CHECK_EQ(v.disk.device().read(buffer, RESERVED_SECTORS + s), 0);
-		uint32_t *entries = (uint32_t*)buffer;
-		for (uint32_t e = 0; e < 128; e++) {
-			cluster_t cluster = s * 128 + e;
-			if (cluster < 3 || cluster >= clusters + 2) continue; // reserved, root, past the end
-			if (cluster >= 100 && cluster < 103) continue;       // the three left free
-			entries[e] = 0x0FFFFFF7; // "bad cluster": not free, not part of any chain
+	if (g_config.format == Format_FAT32) {
+		// A sector at a time, as there are many
+		uint32_t fatSectors = (clusters + 2 + 127) / 128;
+		uint8_t buffer[512];
+		for (uint32_t s = 0; s < fatSectors; s++) {
+			CHECK_EQ(v.disk.device().read(buffer, RESERVED_SECTORS + s), 0);
+			uint32_t *entries = (uint32_t*)buffer;
+			for (uint32_t e = 0; e < 128; e++) {
+				cluster_t cluster = s * 128 + e;
+				if (cluster < 3 || cluster >= clusters + 2) continue; // reserved, root, past the end
+				if (cluster >= 100 && cluster < 103) continue;       // the three left free
+				entries[e] = badCluster();
+			}
+			CHECK_EQ(v.disk.device().write(buffer, RESERVED_SECTORS + s), 0);
 		}
-		CHECK_EQ(v.disk.device().write(buffer, RESERVED_SECTORS + s), 0);
+	} else {
+		v.fat->flush();
+		for (cluster_t cluster = 2; cluster < clusters + 2; cluster++) {
+			if (cluster >= 100 && cluster < 103) continue;
+			CHECK_EQ(setRawFatEntry(v.disk.device(), cluster, badCluster()), 0);
+		}
 	}
 	v.remount();
 	CHECK_EQ(v.fat->countFreeClusters(), 3);
@@ -293,8 +344,9 @@ static void test_random_operations_match_model() {
 	{
 		Chain chain(*v.fat);
 		chain.init(v.fat->getRootDirectoryCluster());
-		directoryClusters = 1;
-		while (chain.nextCluster()) directoryClusters++;
+		// The fixed FAT12/16 root directory takes no clusters
+		directoryClusters = rootDirectoryClusters();
+		while (directoryClusters && chain.nextCluster()) directoryClusters++;
 	}
 	CHECK_EQ(v.fat->countFreeClusters(), v.fat->getClusterCount() - directoryClusters - usedClusters);
 }

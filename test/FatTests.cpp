@@ -15,12 +15,16 @@ static void test_format_and_mount() {
 	Volume v;
 	CHECK_OK();
 	CHECK(v.fat->isMounted());
-	CHECK_EQ(v.fat->getFormat(), Format_FAT32);
+	CHECK_EQ(v.fat->getFormat(), g_config.format);
 	CHECK_EQ(v.fat->getBytesPerCluster(), CLUSTER_BYTES);
-	CHECK(v.fat->getClusterCount() >= 65525);
+	switch (g_config.format) {
+	case Format_FAT12: CHECK(v.fat->getClusterCount() < 4085); break;
+	case Format_FAT16: CHECK(v.fat->getClusterCount() >= 4085 && v.fat->getClusterCount() < 65525); break;
+	default: CHECK(v.fat->getClusterCount() >= 65525); break;
+	}
 	CHECK_EQ(countEntries(*v.fat, "/"), 0);
-	// Everything is free except the root directory cluster.
-	CHECK_EQ(v.fat->countFreeClusters(), v.fat->getClusterCount() - 1);
+	// Everything is free except the FAT32 root directory cluster.
+	CHECK_EQ(v.fat->countFreeClusters(), v.fat->getClusterCount() - rootDirectoryClusters());
 }
 
 static void test_format_rejects_small_volume() {
@@ -106,7 +110,7 @@ static void test_create_write_read() {
 		CHECK(strcmp(text, "Hello, Pico!") == 0);
 	}
 	CHECK_EQ(countEntries(*v.fat, "/"), 1);
-	CHECK_EQ(v.fat->countFreeClusters(), v.fat->getClusterCount() - 2);
+	CHECK_EQ(v.fat->countFreeClusters(), v.fat->getClusterCount() - rootDirectoryClusters() - 1);
 }
 
 static void test_create_existing_opens_it() {
@@ -343,8 +347,10 @@ static void test_directory_grows() {
 		snprintf(name, sizeof(name), "F%02d.TXT", i);
 		CHECK(verifyFile(*v.fat, "/", name, 10 + i, (uint32_t)i, 64));
 	}
-	// 3 directory clusters (root's first one was already used) + 40 file clusters
-	CHECK_EQ(v.fat->countFreeClusters(), v.fat->getClusterCount() - 3 - fileCount);
+	// FAT32: 3 directory clusters (root's first one was already used) + 40 file clusters.
+	// The FAT12/16 root directory has room for 512 entries, so it takes no clusters.
+	const uint32_t directoryClusters = rootDirectoryClusters() ? 3 : 0;
+	CHECK_EQ(v.fat->countFreeClusters(), v.fat->getClusterCount() - directoryClusters - fileCount);
 }
 
 static void test_subdirectories() {

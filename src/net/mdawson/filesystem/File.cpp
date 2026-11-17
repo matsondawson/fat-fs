@@ -135,7 +135,7 @@ namespace Mfs {
 	static void markEntriesDeleted(Fat &fat, cluster_t cluster, uint32_t offset, uint32_t count) {
 		const uint8_t deleted = DIR_ENTRY_DELETED;
 		for (uint32_t i = 0; i < count; i++) {
-			if (offset >= fat.getBytesPerCluster()) {
+			if (offset >= fat.getClusterBytes(cluster)) {
 				cluster = fat.getEntry(cluster);
 				if (mdError || fat.isEndOfClusterChain(cluster)) return;
 				offset = 0;
@@ -573,7 +573,6 @@ namespace Mfs {
 
 	void DirectoryListing::writeEntries(const DirectoryEntry *entries, uint32_t count) {
 		mdError = 0;
-		const uint32_t bpc = m_drive->getBytesPerCluster();
 
 		// Find count consecutive free slots (they may span clusters).
 		reset();
@@ -606,29 +605,41 @@ namespace Mfs {
 			offset = runOffset;
 		} else {
 			cluster = lastCluster;
-			offset = bpc; // forces a new cluster below
+			offset = m_drive->getClusterBytes(cluster); // forces a new cluster below
 		}
 
-		for (uint32_t i = 0; i < count; i++) {
-			if (offset >= bpc) {
-				cluster_t next = m_drive->getEntry(cluster);
-				if (mdError) return;
-				if (m_drive->isEndOfClusterChain(next)) {
-					next = m_drive->allocateCluster(cluster); // zeroed, so it reads as free
+		// Two passes over the slots: the first makes sure they all exist, growing the
+		// directory as needed, so that a directory that can't grow (a full disk, or the
+		// fixed FAT12/16 root directory) fails before any entry is written.
+		const cluster_t startCluster = cluster;
+		const uint32_t startOffset = offset;
+		for (int pass = 0; pass < 2; pass++) {
+			cluster = startCluster;
+			offset = startOffset;
+			for (uint32_t i = 0; i < count; i++) {
+				if (offset >= m_drive->getClusterBytes(cluster)) {
+					// A full FAT12/16 root directory fails here, with Fat_rootDirectoryFull
+					cluster_t next = m_drive->getEntry(cluster);
 					if (mdError) return;
+					if (m_drive->isEndOfClusterChain(next)) {
+						next = m_drive->allocateCluster(cluster); // zeroed, so it reads as free
+						if (mdError) return;
+					}
+					cluster = next;
+					offset = 0;
 				}
-				cluster = next;
-				offset = 0;
+				if (pass == 1) {
+					if (i == 0) {
+						m_longNameCluster = cluster;
+						m_longNameOffset = offset;
+					}
+					m_drive->write(cluster, offset, (const uint8_t*)&entries[i], sizeof(DirectoryEntry));
+					if (mdError) return;
+					m_entryCluster = cluster;
+					m_entryClusterOffset = offset;
+				}
+				offset += sizeof(DirectoryEntry);
 			}
-			if (i == 0) {
-				m_longNameCluster = cluster;
-				m_longNameOffset = offset;
-			}
-			m_drive->write(cluster, offset, (const uint8_t*)&entries[i], sizeof(DirectoryEntry));
-			if (mdError) return;
-			m_entryCluster = cluster;
-			m_entryClusterOffset = offset;
-			offset += sizeof(DirectoryEntry);
 		}
 
 		m_directoryEntry = entries[count - 1];
@@ -770,7 +781,9 @@ namespace Mfs {
 
 		parent.createEntry(name, ATTR_DIRECTORY, cluster);
 		if (mdError) {
+			// freeChain stops at an error already set, so clear it while freeing
 			md_error_t error = mdError;
+			mdError = 0;
 			drive.freeChain(cluster);
 			mdError = error;
 		}

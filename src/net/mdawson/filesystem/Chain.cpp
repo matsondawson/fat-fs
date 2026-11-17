@@ -29,6 +29,10 @@ uint32_t Chain::clusterOffset() const {
 	return m_clusterOffset;
 }
 
+uint32_t Chain::currentClusterBytes() const {
+	return m_currentCluster ? m_fat->getClusterBytes(m_currentCluster) : m_fat->getBytesPerCluster();
+}
+
 uint32_t Chain::position() const {
 	return m_chainPosition + m_clusterOffset;
 }
@@ -69,8 +73,8 @@ bool Chain::advance(bool allocate) {
 		if (mdError) return false;
 	}
 
+	m_chainPosition += currentClusterBytes();
 	m_currentCluster = nextCluster;
-	m_chainPosition += m_fat->getBytesPerCluster();
 	m_clusterOffset = 0;
 	return true;
 }
@@ -103,15 +107,13 @@ void Chain::freeAll() {
  * Seeks by cluster size blocks through chain.
  */
 void Chain::seek(uint32_t position) {
-	const uint32_t bpc = m_fat->getBytesPerCluster();
-
 	// Only rewind when seeking backwards; forward seeks continue from here.
 	if (position < m_chainPosition) {
 		reset();
 	}
 
-	while (position - m_chainPosition > bpc ||
-	       (position - m_chainPosition == bpc && m_currentCluster == 0)) {
+	while (position - m_chainPosition > currentClusterBytes() ||
+	       (position - m_chainPosition == currentClusterBytes() && m_currentCluster == 0)) {
 		if (!nextCluster()) {
 			if (!mdError) mdError = Chain_seekExceedsChainLength;
 			return;
@@ -121,19 +123,17 @@ void Chain::seek(uint32_t position) {
 		mdError = Chain_seekExceedsChainLength;
 		return;
 	}
-	// position - m_chainPosition == bpc is allowed: "end of the current cluster".
+	// position - m_chainPosition == the cluster size is allowed: "end of the current cluster".
 	m_clusterOffset = position - m_chainPosition;
 }
 
 void Chain::write(const uint8_t* data, uint32_t bytesToWrite) {
-	const uint32_t bpc = m_fat->getBytesPerCluster();
-
 	while (bytesToWrite > 0) {
-		if (m_currentCluster == 0 || m_clusterOffset == bpc) {
+		if (m_currentCluster == 0 || m_clusterOffset == currentClusterBytes()) {
 			if (!advance(true)) return;
 		}
 
-		uint32_t chunk = bpc - m_clusterOffset;
+		uint32_t chunk = currentClusterBytes() - m_clusterOffset;
 		if (chunk > bytesToWrite) chunk = bytesToWrite;
 
 		m_fat->write(m_currentCluster, m_clusterOffset, data, chunk);
@@ -146,16 +146,15 @@ void Chain::write(const uint8_t* data, uint32_t bytesToWrite) {
 }
 
 uint32_t Chain::read(uint8_t* data, uint32_t bytesToRead) {
-	const uint32_t bpc = m_fat->getBytesPerCluster();
 	uint32_t bytesRead = 0;
 
 	while (bytesToRead > 0) {
 		if (m_currentCluster == 0) break;
-		if (m_clusterOffset == bpc) {
+		if (m_clusterOffset == currentClusterBytes()) {
 			if (!advance(false)) break;
 		}
 
-		uint32_t chunk = bpc - m_clusterOffset;
+		uint32_t chunk = currentClusterBytes() - m_clusterOffset;
 		if (chunk > bytesToRead) chunk = bytesToRead;
 
 		m_fat->read(m_currentCluster, m_clusterOffset, data, chunk);

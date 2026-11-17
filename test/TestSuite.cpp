@@ -19,13 +19,18 @@ int runFatTests(const char *filter, uint32_t ramDiskSectors) {
 	g_config.randomIterations = ramDiskSectors >= 1024 ? 2000 : 300;
 	int failed = 0;
 
-	printf("Configuration: long file names %s, block cache %s\n",
+	printf("Configuration: long file names %s, block cache %s, FAT12/16 %s\n",
 #ifdef MFS_LONG_FILE_NAMES
 		"ON",
 #else
 		"OFF",
 #endif
 #ifdef MFS_BLOCK_CACHE
+		"ON",
+#else
+		"OFF",
+#endif
+#ifdef MFS_FAT12_16
 		"ON"
 #else
 		"OFF"
@@ -54,6 +59,22 @@ int runFatTests(const char *filter, uint32_t ramDiskSectors) {
 	g_config.cacheSlots = 0;
 	g_config.writeThrough = false;
 	failed += TestFramework::run(CACHE_TESTS, CACHE_TEST_COUNT, filter, "cache");
+#endif
+
+#ifdef MFS_FAT12_16
+	// The same tests on FAT16 and FAT12 volumes, directly and through a write back cache
+	g_config.format = Format_FAT16;
+	failed += runGroups("fat16", filter);
+	failed += TestFramework::run(FAT12_16_TESTS, FAT12_16_TEST_COUNT, filter, "fat16");
+	g_config.format = Format_FAT12;
+	failed += runGroups("fat12", filter);
+	failed += TestFramework::run(FAT12_16_TESTS, FAT12_16_TEST_COUNT, filter, "fat12");
+#ifdef MFS_BLOCK_CACHE
+	g_config.cacheSlots = 2;
+	failed += runGroups("fat12-cache-2-slot-write-back", filter);
+	g_config.cacheSlots = 0;
+#endif
+	g_config.format = Format_FAT32;
 #endif
 
 	printf("\n==== %s: %d failed test(s) ====\n", failed ? "FAILED" : "ALL PASSED", failed);

@@ -69,6 +69,10 @@ enum {
 	Fat_formatVolumeTooSmall,
 	/** Sectors per cluster must be a power of two from 1 to 64 */
 	Fat_formatInvalidClusterSize,
+	/** The FAT12/FAT16 root directory has a fixed size, and it has no free entries left */
+	Fat_rootDirectoryFull,
+	/** Too many sectors for a FAT12/FAT16 volume with the requested cluster size */
+	Fat_formatVolumeTooLarge,
 };
 
 enum {

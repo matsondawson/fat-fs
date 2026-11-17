@@ -25,14 +25,29 @@ typedef enum {
 	Format_FAT32
 } FatFormat_e;
 
+class FatEntryReader;
+class Sector;
+
 /**
  * A mounted FAT volume.
  *
- * Only FAT32 volumes are currently supported; mounting FAT12/FAT16 sets mdError.
+ * FAT32 volumes are always supported. FAT12 and FAT16 volumes need MFS_FAT12_16
+ * (CMake option FAT_FAT12_16); without it, mounting one fails with
+ * Fat_Fat12FormatUnsupported or Fat_Fat16FormatUnsupported.
+ *
+ * On FAT12/FAT16 the root directory is a fixed run of sectors rather than a
+ * cluster chain. It is addressed as cluster FIXED_ROOT_CLUSTER, one "cluster" of
+ * getClusterBytes(FIXED_ROOT_CLUSTER) bytes that can't grow: adding an entry when
+ * it is full fails with Fat_rootDirectoryFull.
+ *
  * After construction check mdError (or isMounted()) before using the volume.
  */
 class Fat
 {
+public:
+	/** The cluster number standing for the FAT12/FAT16 fixed root directory. */
+	static const cluster_t FIXED_ROOT_CLUSTER = 1;
+
 private:
 	SectorDevice *m_partition;
 	uint32_t m_bytesPerSector;
@@ -57,14 +72,21 @@ private:
 
 	FatFormat_e m_format;
 
-	union {
-		cluster_t cluster; // location of root directory for FAT32
-		sector_t sector; // location of root directory for FAT16/FAT12
-	} rootDirectory;
+	/** The root directory's first cluster, or FIXED_ROOT_CLUSTER on FAT12/FAT16. */
+	cluster_t m_rootCluster;
+	/** First sector of the FAT12/FAT16 fixed root directory. */
+	sector_t m_rootSector;
 
 	md_error_t init();
 	sector_t clusterToSector(cluster_t cluster) const;
 	void invalidateFsInfo();
+	bool isFixedRoot(cluster_t cluster) const;
+	/** Where an access within a cluster starts. Sets mdError and returns false if it's out of range. */
+	bool locate(cluster_t cluster, uint32_t offset, uint32_t dataSize, sector_t *sector);
+	/** Read the FAT entry for cluster (which must be in range) through reader. */
+	md_error_t readEntry(FatEntryReader &reader, cluster_t cluster, cluster_t *value);
+	/** Write a FAT sector to every FAT copy. */
+	md_error_t writeFatSector(Sector &sector, sector_t sectorInFirstFat);
 
 public:
 	Fat(SectorDevice &partition);
@@ -101,6 +123,8 @@ public:
 	cluster_t getRootDirectoryCluster() const;
 	cluster_t getEndOfClusterChain() const;
 	uint32_t getBytesPerCluster() const;
+	/** Bytes in cluster: getBytesPerCluster(), or the fixed root directory's size for FIXED_ROOT_CLUSTER. */
+	uint32_t getClusterBytes(cluster_t cluster) const;
 	uint32_t getClusterCount() const;
 	FatFormat_e getFormat() const;
 

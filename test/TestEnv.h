@@ -32,7 +32,12 @@ struct TestConfig {
 	bool readAhead;
 	/** Iterations for randomized tests. */
 	uint32_t randomIterations;
+	/** Format of the volumes Volume makes. */
+	FatFormat_e format;
 };
+
+/** Clusters a new volume's root directory takes: 1 on FAT32, none for the fixed FAT12/16 root. */
+uint32_t rootDirectoryClusters();
 
 extern TestConfig g_config;
 
@@ -52,7 +57,10 @@ struct Disk {
 	SectorDevice &device();
 };
 
-/** A freshly formatted, mounted FAT32 volume. */
+/**
+ * A freshly formatted, mounted volume of g_config.format. FAT12/16 volumes are sized
+ * for sectorsPerCluster (3000 or 20000 clusters), ignoring sectors.
+ */
 struct Volume {
 	Disk disk;
 	Fat *fat;
@@ -101,5 +109,7 @@ extern const TestFramework::TestCase ROBUSTNESS_TESTS[];
 extern const int ROBUSTNESS_TEST_COUNT;
 extern const TestFramework::TestCase CACHE_TESTS[];
 extern const int CACHE_TEST_COUNT;
+extern const TestFramework::TestCase FAT12_16_TESTS[];
+extern const int FAT12_16_TEST_COUNT;
 
 #endif

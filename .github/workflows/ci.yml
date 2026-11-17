@@ -78,7 +78,7 @@ jobs:
           path: build-pico/fat_pico_tests.uf2
 
   arm-library:
-    name: Generic Cortex-M library (${{ matrix.cpu }}, lfn=${{ matrix.lfn }}, cache=${{ matrix.cache }})
+    name: Generic Cortex-M library (${{ matrix.cpu }}, lfn=${{ matrix.lfn }}, cache=${{ matrix.cache }}, fat12_16=${{ matrix.fat12_16 }})
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -86,6 +86,7 @@ jobs:
         cpu: [cortex-m0plus, cortex-m4]
         lfn: [OFF, ON]
         cache: [OFF, ON]
+        fat12_16: [OFF, ON]
     steps:
       - uses: actions/checkout@v4
       - name: Install Arm toolchain
@@ -94,7 +95,8 @@ jobs:
         run: |
           cmake -S . -B build-arm -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake \
             -DFAT_ARM_CPU=${{ matrix.cpu }} -DFAT_LONG_FILE_NAMES=${{ matrix.lfn }} \
-            -DFAT_BLOCK_CACHE=${{ matrix.cache }} -DCMAKE_BUILD_TYPE=MinSizeRel \
+            -DFAT_BLOCK_CACHE=${{ matrix.cache }} -DFAT_FAT12_16=${{ matrix.fat12_16 }} \
+            -DCMAKE_BUILD_TYPE=MinSizeRel \
             -DCMAKE_COMPILE_WARNING_AS_ERROR=ON
           cmake --build build-arm -j
           arm-none-eabi-size -t build-arm/libfat.a | tail -1

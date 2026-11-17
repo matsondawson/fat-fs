@@ -1,8 +1,8 @@
 /**
  * fatimg - use the FAT driver on a disk image (or block device) from Linux.
  *
- *   fatimg [-p N] IMAGE create SIZE_MB      create a sparse image and format it FAT32
- *   fatimg [-p N] IMAGE format              format an existing image/device FAT32
+ *   fatimg [-p N] [-t TYPE] IMAGE create SIZE_MB   create a sparse image and format it
+ *   fatimg [-p N] [-t TYPE] IMAGE format           format an existing image/device
  *   fatimg [-p N] IMAGE info
  *   fatimg [-p N] IMAGE ls [DIR]
  *   fatimg [-p N] IMAGE cat PATH
@@ -14,7 +14,8 @@
  *   fatimg --features                       print compiled in features
  *
  * -p N uses primary partition N of an MBR partitioned image; without it the
- * image is treated as a bare FAT volume. Paths may use long names when built
+ * image is treated as a bare FAT volume. -t 12, 16 or 32 picks the FAT type to
+ * format, default 32; 12 and 16 need a build with FAT12/16 support. Paths may use long names when built
  * with long file name support.
  */
 
@@ -45,7 +46,7 @@ static void localFatTime(uint16_t *date, uint16_t *time_) {
 
 static int usage() {
 	fprintf(stderr,
-		"usage: fatimg [-p N] IMAGE COMMAND [ARGS]\n"
+		"usage: fatimg [-p N] [-t 12|16|32] IMAGE COMMAND [ARGS]\n"
 		"  create SIZE_MB | format | info | ls [DIR] | cat PATH\n"
 		"  put LOCALFILE PATH | get PATH LOCALFILE | rm PATH | mkdir PATH\n");
 	return 2;
@@ -91,13 +92,27 @@ int main(int argc, char *argv[]) {
 #ifdef MFS_BLOCK_CACHE
 		printf("cache\n");
 #endif
+#ifdef MFS_FAT12_16
+		printf("fat12_16\n");
+#endif
 		return 0;
 	}
 
 	int arg = 1;
 	int partitionIndex = -1;
-	if (arg + 1 < argc && strcmp(argv[arg], "-p") == 0) {
-		partitionIndex = atoi(argv[arg + 1]);
+	FatFormat_e formatType = Format_FAT32;
+	while (arg + 1 < argc && argv[arg][0] == '-') {
+		if (strcmp(argv[arg], "-p") == 0) {
+			partitionIndex = atoi(argv[arg + 1]);
+		} else if (strcmp(argv[arg], "-t") == 0) {
+			int bits = atoi(argv[arg + 1]);
+			if (bits == 12) formatType = Format_FAT12;
+			else if (bits == 16) formatType = Format_FAT16;
+			else if (bits == 32) formatType = Format_FAT32;
+			else return usage();
+		} else {
+			return usage();
+		}
 		arg += 2;
 	}
 	if (argc - arg < 2) return usage();
@@ -138,7 +153,7 @@ int main(int argc, char *argv[]) {
 	sector_t volumeSectors = partitionIndex < 0 ? device.getSectorCount() : partition.getSectorCount();
 
 	if (strcmp(command, "format") == 0) {
-		formatFat32(partition, volumeSectors);
+		formatFat(partition, volumeSectors, formatType);
 		if (mdError) return fail("format");
 		if (!flushAll(partition, device)) return fail("flush");
 		return 0;
@@ -148,7 +163,8 @@ int main(int argc, char *argv[]) {
 	if (mdError) return fail("mount");
 
 	if (strcmp(command, "info") == 0) {
-		printf("FAT32, %lu clusters of %lu bytes, %lu free\n",
+		const char *type = fat.getFormat() == Format_FAT12 ? "FAT12" : fat.getFormat() == Format_FAT16 ? "FAT16" : "FAT32";
+		printf("%s, %lu clusters of %lu bytes, %lu free\n", type,
 			(unsigned long)fat.getClusterCount(), (unsigned long)fat.getBytesPerCluster(),
 			(unsigned long)fat.countFreeClusters());
 		return 0;
