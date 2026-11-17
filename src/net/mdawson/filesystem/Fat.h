@@ -1,0 +1,119 @@
+#ifndef net_mdawson_filesystems_Fat
+#define net_mdawson_filesystems_Fat
+
+#include "net/mdawson/filesystem/SectorDevice.h"
+
+typedef uint32_t cluster_t;
+
+#define ATTR_READ_ONLY   	0x01
+#define ATTR_HIDDEN 	0x02
+#define ATTR_SYSTEM 	0x04
+#define ATTR_VOLUME_ID 	0x08
+#define ATTR_DIRECTORY	0x10
+#define ATTR_ARCHIVE  	0x20
+#define ATTR_LONG_NAME 	(ATTR_READ_ONLY | ATTR_HIDDEN | ATTR_SYSTEM | ATTR_VOLUME_ID)
+#define ATTR_LONG_NAME_MASK	(ATTR_READ_ONLY |ATTR_HIDDEN |ATTR_SYSTEM |ATTR_VOLUME_ID |ATTR_DIRECTORY |ATTR_ARCHIVE)
+
+/** DIR_Name[0] value marking a deleted (free) entry. */
+#define DIR_ENTRY_DELETED 0xE5
+/** DIR_Name[0] value marking a free entry and the end of the directory. */
+#define DIR_ENTRY_END     0x00
+
+typedef enum {
+	Format_FAT12,
+	Format_FAT16,
+	Format_FAT32
+} FatFormat_e;
+
+/**
+ * A mounted FAT volume.
+ *
+ * Only FAT32 volumes are currently supported; mounting FAT12/FAT16 sets mdError.
+ * After construction check mdError (or isMounted()) before using the volume.
+ */
+class Fat
+{
+private:
+	SectorDevice *m_partition;
+	uint32_t m_bytesPerSector;
+	uint32_t m_bytesPerCluster;
+	uint32_t m_sectorsPerCluster;
+	/**
+	 * Count of sectors used by the root directory for Fat12/Fat16
+	 */
+	uint32_t m_rootDirectorySectorCount;
+	uint32_t m_sectorsPerFatTable;
+	uint32_t m_numFats;
+	uint32_t m_sectorCount;
+	uint32_t m_dataSectorCount;
+	sector_t m_firstDataSector;
+	uint32_t m_clusterCount;
+	uint32_t m_reservedSectors;
+	sector_t m_infoSector;
+	cluster_t m_lastFreeCluster;
+	cluster_t m_endOfChainCluster;
+	bool m_mounted;
+	bool m_fsInfoInvalidated;
+
+	FatFormat_e m_format;
+
+	union {
+		cluster_t cluster; // location of root directory for FAT32
+		sector_t sector; // location of root directory for FAT16/FAT12
+	} rootDirectory;
+
+	md_error_t init();
+	sector_t clusterToSector(cluster_t cluster) const;
+	void invalidateFsInfo();
+
+public:
+	Fat(SectorDevice &partition);
+	/** Unmount: flushes the device (e.g. a write-back cache). Close Files first. */
+	~Fat();
+	Fat(const Fat&) = delete;
+	Fat& operator=(const Fat&) = delete;
+
+	bool isMounted() const;
+
+	/** Get the FAT entry (next cluster) for a cluster. */
+	cluster_t getEntry(cluster_t cluster);
+	/** Set the FAT entry for a cluster, in every FAT copy. */
+	void setEntry(cluster_t cluster, cluster_t nextCluster);
+
+	/**
+	 * Allocate a free cluster, mark it end-of-chain, zero its contents and,
+	 * if fromCluster is non-zero, link fromCluster to it.
+	 *
+	 * @return the new cluster, or 0 on failure (mdError is set).
+	 */
+	cluster_t allocateCluster(cluster_t fromCluster);
+
+	/** Free every cluster of the chain starting at firstCluster. */
+	void freeChain(cluster_t firstCluster);
+
+	/** Flush the underlying device (e.g. a write-back cache). Sets mdError on failure. */
+	void flush();
+
+	/** Count free clusters by scanning the FAT. */
+	uint32_t countFreeClusters();
+
+	bool isEndOfClusterChain(cluster_t cluster) const;
+	cluster_t getRootDirectoryCluster() const;
+	cluster_t getEndOfClusterChain() const;
+	uint32_t getBytesPerCluster() const;
+	uint32_t getClusterCount() const;
+	FatFormat_e getFormat() const;
+
+	/**
+	 * Write within a single cluster. offset + dataSize must not exceed the cluster size.
+	 */
+	void write(cluster_t cluster, uint32_t offset, const uint8_t *data, uint32_t dataSize);
+
+	/**
+	 * Read within a single cluster. offset + dataSize must not exceed the cluster size.
+	 * @return number of bytes read.
+	 */
+	uint32_t read(cluster_t cluster, uint32_t offset, uint8_t *data, uint32_t dataSize);
+};
+
+#endif

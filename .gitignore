@@ -1,0 +1,11 @@
+# CMake build directories
+build*/
+cmake-build-*/
+
+# Disk images made while testing
+*.img
+
+# Editors
+.vscode/
+.idea/
+*.swp

@@ -1,0 +1,114 @@
+name: CI
+
+# Runs on every pull request (and on pushes to main). Make the "CI result" check
+# required in the branch protection rules so a PR can't merge unless it passes.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  host-tests:
+    name: Host tests (${{ matrix.compiler }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dosfstools and mtools
+        run: sudo apt-get update && sudo apt-get install -y dosfstools mtools
+
+      - name: Configure
+        run: |
+          if [ "${{ matrix.compiler }}" = clang ]; then
+            export CC=clang CXX=clang++
+          fi
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DCMAKE_COMPILE_WARNING_AS_ERROR=ON
+
+      - name: Build
+        run: cmake --build build -j
+
+      # unit_* = portable test suite (every feature combination, with ASan/UBSan),
+      # image_* = cross-checks against mkfs.fat / mtools / fsck.fat on image files.
+      - name: Test
+        run: ctest --test-dir build --output-on-failure -j
+
+  pico:
+    name: Pico firmware (${{ matrix.board }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        board: [pico, pico2]
+    env:
+      PICO_SDK_VERSION: 2.1.1
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Arm toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib
+
+      - name: Fetch pico-sdk
+        run: |
+          git clone --depth 1 -b "$PICO_SDK_VERSION" https://github.com/raspberrypi/pico-sdk.git "$RUNNER_TEMP/pico-sdk"
+          git -C "$RUNNER_TEMP/pico-sdk" submodule update --init --depth 1 lib/tinyusb
+          echo "PICO_SDK_PATH=$RUNNER_TEMP/pico-sdk" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: |
+          cmake -S pico -B build-pico -DPICO_BOARD=${{ matrix.board }}
+          cmake --build build-pico -j
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fat_pico_tests-${{ matrix.board }}
+          path: build-pico/fat_pico_tests.uf2
+
+  arm-library:
+    name: Generic Cortex-M library (${{ matrix.cpu }}, lfn=${{ matrix.lfn }}, cache=${{ matrix.cache }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        cpu: [cortex-m0plus, cortex-m4]
+        lfn: [OFF, ON]
+        cache: [OFF, ON]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Arm toolchain
+        run: sudo apt-get update && sudo apt-get install -y gcc-arm-none-eabi libnewlib-arm-none-eabi
+      - name: Build
+        run: |
+          cmake -S . -B build-arm -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake \
+            -DFAT_ARM_CPU=${{ matrix.cpu }} -DFAT_LONG_FILE_NAMES=${{ matrix.lfn }} \
+            -DFAT_BLOCK_CACHE=${{ matrix.cache }} -DCMAKE_BUILD_TYPE=MinSizeRel \
+            -DCMAKE_COMPILE_WARNING_AS_ERROR=ON
+          cmake --build build-arm -j
+          arm-none-eabi-size -t build-arm/libfat.a | tail -1
+
+  # A single check to require in branch protection, covering every job above.
+  ci-result:
+    name: CI result
+    if: always()
+    needs: [host-tests, pico, arm-library]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check all jobs passed
+        run: |
+          if [ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped') }}" = true ]; then
+            echo "Some CI jobs did not pass"
+            exit 1
+          fi
