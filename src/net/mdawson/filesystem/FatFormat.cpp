@@ -133,4 +133,135 @@ namespace Mfs {
 			if (!writeSector(sector, RESERVED_SECTORS + f * fatSize)) return;
 		}
 	}
+
+#ifdef MFS_FAT12_16
+	static const uint32_t SMALL_RESERVED_SECTORS = 1;
+	static const uint32_t ROOT_ENTRIES = 512;
+
+	struct SmallLayout {
+		uint32_t fatSize;
+		uint32_t clusterCount;
+	};
+
+	// FAT size and cluster count, growing the FAT until it holds an entry for every cluster
+	static bool smallLayout(sector_t sectorCount, uint32_t sectorsPerCluster, bool fat12, SmallLayout &layout) {
+		const uint32_t rootSectors = ROOT_ENTRIES * 32 / SECTOR_SIZE;
+		uint32_t fatSize = 1;
+		for (;;) {
+			uint32_t overhead = SMALL_RESERVED_SECTORS + NUM_FATS * fatSize + rootSectors;
+			if (sectorCount <= overhead) return false;
+			uint32_t clusters = (sectorCount - overhead) / sectorsPerCluster;
+			uint32_t bytes = fat12 ? ((clusters + 2) * 3 + 1) / 2 : (clusters + 2) * 2;
+			uint32_t needed = (bytes + SECTOR_SIZE - 1) / SECTOR_SIZE;
+			if (needed <= fatSize) {
+				layout.fatSize = fatSize;
+				layout.clusterCount = clusters;
+				return true;
+			}
+			fatSize = needed;
+		}
+	}
+
+	static void formatSmall(SectorDevice &device, sector_t sectorCount, bool fat12, uint8_t sectorsPerCluster,
+	                        const char *label, uint32_t volumeId) {
+		const uint32_t minClusters = fat12 ? 1 : 4085;
+		const uint32_t maxClusters = fat12 ? 4084 : 65524;
+		SmallLayout layout;
+
+		if (sectorsPerCluster == 0) {
+			// The smallest cluster that keeps the count within the type's limit
+			for (sectorsPerCluster = 1; ; sectorsPerCluster *= 2) {
+				if (!smallLayout(sectorCount, sectorsPerCluster, fat12, layout) || layout.clusterCount < minClusters) {
+					mdError = Fat_formatVolumeTooSmall;
+					return;
+				}
+				if (layout.clusterCount <= maxClusters) break;
+				if (sectorsPerCluster == 64) {
+					mdError = Fat_formatVolumeTooLarge;
+					return;
+				}
+			}
+		} else {
+			if (sectorsPerCluster > 64 || (sectorsPerCluster & (sectorsPerCluster - 1)) != 0) {
+				mdError = Fat_formatInvalidClusterSize;
+				return;
+			}
+			if (!smallLayout(sectorCount, sectorsPerCluster, fat12, layout) || layout.clusterCount < minClusters) {
+				mdError = Fat_formatVolumeTooSmall;
+				return;
+			}
+			if (layout.clusterCount > maxClusters) {
+				mdError = Fat_formatVolumeTooLarge;
+				return;
+			}
+		}
+
+		const uint32_t rootSectors = ROOT_ENTRIES * 32 / SECTOR_SIZE;
+		Sector sector(device);
+
+		// Clear the reserved sector, the FATs and the root directory.
+		memset(sector.m_data, 0, SECTOR_SIZE);
+		for (sector_t s = 0; s < SMALL_RESERVED_SECTORS + NUM_FATS * layout.fatSize + rootSectors; s++) {
+			if (!writeSector(sector, s)) return;
+		}
+
+		// Boot sector
+		BPB_t *bpb = (BPB_t*)sector.m_data;
+		bpb->BS_jmpBoot[0] = 0xEB;
+		bpb->BS_jmpBoot[1] = 0x3C;
+		bpb->BS_jmpBoot[2] = 0x90;
+		memcpy(bpb->BS_OEMName, "MSWIN4.1", 8);
+		bpb->BPB_BytesPerSec = SECTOR_SIZE;
+		bpb->BPB_SecPerClus = sectorsPerCluster;
+		bpb->BPB_RsvdSecCnt = SMALL_RESERVED_SECTORS;
+		bpb->BPB_NumFATs = NUM_FATS;
+		bpb->BPB_RootEntCnt = ROOT_ENTRIES;
+		bpb->BPB_TotSec16 = sectorCount < 0x10000 ? (uint16_t)sectorCount : 0;
+		bpb->BPB_Media = MEDIA_FIXED;
+		bpb->BPB_FATSz16 = (uint16_t)layout.fatSize;
+		bpb->BPB_SecPerTrk = 63;
+		bpb->BPB_NumHeads = 255;
+		bpb->BPB_HiddSec = 0;
+		bpb->BPB_TotSec32 = sectorCount < 0x10000 ? 0 : sectorCount;
+		bpb->bpb.bpb16.BS_DrvNum = 0x80;
+		bpb->bpb.bpb16.BS_Reserved1 = 0;
+		bpb->bpb.bpb16.BS_BootSig = 0x29;
+		bpb->bpb.bpb16.BS_VolID = volumeId;
+		memset(bpb->bpb.bpb16.BS_VolLab, ' ', 11);
+		const char *volumeLabel = label ? label : "NO NAME";
+		for (int i = 0; i < 11 && volumeLabel[i]; i++) {
+			char ch = volumeLabel[i];
+			bpb->bpb.bpb16.BS_VolLab[i] = (ch >= 'a' && ch <= 'z') ? (char)(ch - 'a' + 'A') : ch;
+		}
+		memcpy(bpb->bpb.bpb16.BS_FilSysType, fat12 ? "FAT12   " : "FAT16   ", 8);
+		sector.m_data[510] = 0x55;
+		sector.m_data[511] = 0xAA;
+		if (!writeSector(sector, 0)) return;
+
+		// First FAT sector: the media descriptor and the reserved entry 1
+		memset(sector.m_data, 0, SECTOR_SIZE);
+		sector.m_data[0] = MEDIA_FIXED;
+		sector.m_data[1] = 0xFF;
+		sector.m_data[2] = 0xFF;
+		if (!fat12) sector.m_data[3] = 0xFF;
+		for (uint32_t f = 0; f < NUM_FATS; f++) {
+			if (!writeSector(sector, SMALL_RESERVED_SECTORS + f * layout.fatSize)) return;
+		}
+	}
+#endif
+
+	void formatFat(SectorDevice &device, sector_t sectorCount, FatFormat_e format, uint8_t sectorsPerCluster,
+	               const char *label, uint32_t volumeId) {
+		mdError = 0;
+		if (format == Format_FAT32) {
+			formatFat32(device, sectorCount, sectorsPerCluster, label, volumeId);
+			return;
+		}
+#ifdef MFS_FAT12_16
+		formatSmall(device, sectorCount, format == Format_FAT12, sectorsPerCluster, label, volumeId);
+#else
+		(void)device; (void)sectorCount; (void)sectorsPerCluster; (void)label; (void)volumeId;
+		mdError = format == Format_FAT12 ? Fat_Fat12FormatUnsupported : Fat_Fat16FormatUnsupported;
+#endif
+	}
 }

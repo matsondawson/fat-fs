@@ -9,8 +9,29 @@
 #define FREE_CLUSTER 0
 #define FAT32_ENTRY_MASK 0x0FFFFFFFu
 
+/** Reads FAT entries through one sector buffer, reading a sector only when it changes. */
+class FatEntryReader {
+public:
+	explicit FatEntryReader(SectorDevice &device) : m_sector(device), m_loaded((sector_t)-1) {}
+
+	md_error_t load(sector_t sector) {
+		if (sector == m_loaded) return 0;
+		m_loaded = (sector_t)-1;
+		md_error_t error = m_sector.read(sector);
+		if (!error) m_loaded = sector;
+		return error;
+	}
+
+	const uint8_t *data() const { return m_sector.m_data; }
+
+private:
+	Sector m_sector;
+	sector_t m_loaded;
+};
+
 Fat::Fat(SectorDevice &partition)
-	: m_partition(&partition), m_infoSector(0), m_mounted(false), m_fsInfoInvalidated(false) {
+	: m_partition(&partition), m_infoSector(0), m_mounted(false), m_fsInfoInvalidated(false),
+	  m_rootCluster(0), m_rootSector(0) {
 	md_error_t error = init();
 	mdError = error;
 	m_mounted = (error == 0);
@@ -192,8 +213,11 @@ md_error_t Fat::init() {
 	// device->clusters = device->dataSectors >> device->sectorsToClusterShift;
 	m_clusterCount = m_dataSectorCount / m_sectorsPerCluster;
 
-	// Every FAT32 cluster needs a 4 byte FAT entry.
-	if (m_clusterCount >= 65525 && (uint64_t)(m_clusterCount + 2) * 4 > (uint64_t)m_sectorsPerFatTable * m_bytesPerSector) {
+	// Every cluster needs a FAT entry: 4 bytes on FAT32, 2 on FAT16, 1.5 on FAT12.
+	uint64_t fatBytesNeeded = m_clusterCount >= 65525 ? (uint64_t)(m_clusterCount + 2) * 4
+		: m_clusterCount >= 4085 ? (uint64_t)(m_clusterCount + 2) * 2
+		: ((uint64_t)(m_clusterCount + 2) * 3 + 1) / 2;
+	if (fatBytesNeeded > (uint64_t)m_sectorsPerFatTable * m_bytesPerSector) {
 		return Fat_invalidDriveFormat_fatTooSmall;
 	}
 
@@ -237,12 +261,18 @@ md_error_t Fat::init() {
 			Extended boot signature (0x29).  This is a signature byte that
 			indicates that the following three fields in the boot sector are present.
 		*/
-		if (bpb->BPB_FATSz16==0 || bpb->bpb.bpb16.BS_BootSig!=0x29)  {
+		// BS_BootSig isn't checked: it only says whether the volume ID and label are present.
+		if (bpb->BPB_FATSz16==0)  {
 			return Fat_invalidDriveFormat_rootEntryCountNotMultipleOfSectorSize_FatSz16;
 		}
+		if (bpb->BPB_RootEntCnt==0) {
+			return Fat_invalidDriveFormat_rootEntryCountMustNotBeZero;
+		}
 
-		// set the root directory
-		rootDirectory.sector=bpb->BPB_RsvdSecCnt + (bpb->BPB_NumFATs * ((uint32_t)bpb->BPB_FATSz16));
+		// The root directory is the fixed run of sectors after the FATs
+		m_rootSector = bpb->BPB_RsvdSecCnt + (bpb->BPB_NumFATs * ((uint32_t)bpb->BPB_FATSz16));
+		m_rootCluster = FIXED_ROOT_CLUSTER;
+		m_infoSector = 0;
 	}
 	/********************* FAT32 ********************/
 	else if (m_format == Format_FAT32) {
@@ -282,7 +312,7 @@ md_error_t Fat::init() {
 			return Fat_invalidDriveFormat_rootClusterIndex;
 		}
 
-		rootDirectory.cluster=bpb->bpb.bpb32.BPB_RootClus;
+		m_rootCluster=bpb->bpb.bpb32.BPB_RootClus;
 		m_infoSector= bpb->bpb.bpb32.BPB_FSInfo;
 	}
 
@@ -297,14 +327,15 @@ md_error_t Fat::init() {
 		return Fat_invalidDriveFormat_bootBlockEndSignatureNotAA55;
 	}
 
-	// Only FAT32 is supported for now: FAT12/16 use a fixed root directory region
-	// and different FAT entry encodings.
+#ifndef MFS_FAT12_16
+	// FAT12/16 support (fixed root directory, 12 and 16 bit FAT entries) is a build option
 	if (m_format == Format_FAT12) {
 		return Fat_Fat12FormatUnsupported;
 	}
 	if (m_format == Format_FAT16) {
 		return Fat_Fat16FormatUnsupported;
 	}
+#endif
 
 	// Hint for where to start looking for a free cluster.
 	m_lastFreeCluster = 2;
@@ -315,22 +346,79 @@ sector_t Fat::clusterToSector(cluster_t cluster) const {
 	return m_firstDataSector + (cluster - 2) * m_sectorsPerCluster;
 }
 
+bool Fat::isFixedRoot(cluster_t cluster) const {
+#ifdef MFS_FAT12_16
+	return cluster == FIXED_ROOT_CLUSTER && m_rootCluster == FIXED_ROOT_CLUSTER;
+#else
+	(void)cluster;
+	return false;
+#endif
+}
+
+md_error_t Fat::readEntry(FatEntryReader &reader, cluster_t cluster, cluster_t *value) {
+#ifdef MFS_FAT12_16
+	if (m_format == Format_FAT16) {
+		// 2 bytes per entry, 256 per sector
+		if (md_error_t error = reader.load(m_reservedSectors + (cluster >> 8))) return error;
+		const uint8_t *entry = reader.data() + (cluster & 255) * 2;
+		*value = (cluster_t)entry[0] | ((cluster_t)entry[1] << 8);
+		return 0;
+	}
+	if (m_format == Format_FAT12) {
+		// 1.5 bytes per entry, so an entry can start in the last byte of one sector and end in the next
+		uint32_t offset = cluster + (cluster >> 1);
+		sector_t sector = m_reservedSectors + offset / 512;
+		uint32_t index = offset % 512;
+		if (md_error_t error = reader.load(sector)) return error;
+		uint32_t pair = reader.data()[index];
+		if (index == 511) {
+			if (md_error_t error = reader.load(sector + 1)) return error;
+			pair |= (uint32_t)reader.data()[0] << 8;
+		} else {
+			pair |= (uint32_t)reader.data()[index + 1] << 8;
+		}
+		*value = (cluster & 1) ? pair >> 4 : pair & 0xFFF;
+		return 0;
+	}
+#endif
+	// FAT32: 4 bytes per entry, 128 entries per 512 byte sector
+	if (md_error_t error = reader.load(m_reservedSectors + (cluster >> 7))) return error;
+	const uint8_t *entry = reader.data() + (cluster & 127) * 4;
+	*value = ((cluster_t)entry[0] | ((cluster_t)entry[1] << 8) | ((cluster_t)entry[2] << 16) |
+	          ((cluster_t)entry[3] << 24)) & FAT32_ENTRY_MASK;
+	return 0;
+}
+
 /**
  * Given a cluster determine the next cluster.
  */
 cluster_t Fat::getEntry(cluster_t cluster) {
+	// The fixed root directory is one "cluster" with nothing after it
+	if (isFixedRoot(cluster)) {
+		return m_endOfChainCluster;
+	}
 	if (cluster < 2 || cluster >= m_clusterCount + 2) {
 		mdError = Fat_clusterOutOfRange;
 		return m_endOfChainCluster;
 	}
 
-	Sector sector(*m_partition);
-	// FAT32: 4 bytes per entry, 128 entries per 512 byte sector
-	if (md_error_t error = sector.read(m_reservedSectors + (cluster >> 7))) {
+	FatEntryReader reader(*m_partition);
+	cluster_t value;
+	if (md_error_t error = readEntry(reader, cluster, &value)) {
 		mdError = error;
 		return m_endOfChainCluster;
 	}
-	return ((uint32_t*)sector.m_data)[cluster & 127] & FAT32_ENTRY_MASK;
+	return value;
+}
+
+md_error_t Fat::writeFatSector(Sector &sector, sector_t sectorInFirstFat) {
+	// Keep every FAT copy in sync (mirroring).
+	for (uint32_t fat = 0; fat < m_numFats; fat++) {
+		if (md_error_t error = sector.write(sectorInFirstFat + fat * m_sectorsPerFatTable)) {
+			return error;
+		}
+	}
+	return 0;
 }
 
 void Fat::setEntry(cluster_t cluster, cluster_t nextCluster) {
@@ -342,6 +430,51 @@ void Fat::setEntry(cluster_t cluster, cluster_t nextCluster) {
 	invalidateFsInfo();
 
 	Sector sector(*m_partition);
+#ifdef MFS_FAT12_16
+	if (m_format == Format_FAT16) {
+		sector_t sectorOffset = m_reservedSectors + (cluster >> 8);
+		if (md_error_t error = sector.read(sectorOffset)) {
+			mdError = error;
+			return;
+		}
+		uint8_t *entry = sector.m_data + (cluster & 255) * 2;
+		entry[0] = (uint8_t)nextCluster;
+		entry[1] = (uint8_t)(nextCluster >> 8);
+		if (md_error_t error = writeFatSector(sector, sectorOffset)) mdError = error;
+		return;
+	}
+	if (m_format == Format_FAT12) {
+		// Two entries share three bytes: an even cluster has the low byte and the low
+		// nibble of the next, an odd one the high nibble of its first byte and all of the next.
+		uint32_t value = nextCluster & 0xFFF;
+		uint32_t offset = cluster + (cluster >> 1);
+		sector_t sectorOffset = m_reservedSectors + offset / 512;
+		uint32_t index = offset % 512;
+		bool odd = (cluster & 1) != 0;
+		if (md_error_t error = sector.read(sectorOffset)) {
+			mdError = error;
+			return;
+		}
+		uint8_t *first = sector.m_data + index;
+		*first = odd ? (uint8_t)((*first & 0x0F) | ((value << 4) & 0xF0)) : (uint8_t)value;
+		if (index == 511) {
+			// The entry's second byte is the first of the next sector
+			if (md_error_t error = writeFatSector(sector, sectorOffset)) {
+				mdError = error;
+				return;
+			}
+			sectorOffset++;
+			if (md_error_t error = sector.read(sectorOffset)) {
+				mdError = error;
+				return;
+			}
+		}
+		uint8_t *second = sector.m_data + (index == 511 ? 0 : index + 1);
+		*second = odd ? (uint8_t)(value >> 4) : (uint8_t)((*second & 0xF0) | ((value >> 8) & 0x0F));
+		if (md_error_t error = writeFatSector(sector, sectorOffset)) mdError = error;
+		return;
+	}
+#endif
 	sector_t sectorOffset = m_reservedSectors + (cluster >> 7);
 	if (md_error_t error = sector.read(sectorOffset)) {
 		mdError = error;
@@ -350,14 +483,7 @@ void Fat::setEntry(cluster_t cluster, cluster_t nextCluster) {
 	uint32_t *entry = &((uint32_t*)sector.m_data)[cluster & 127];
 	// The top 4 bits of a FAT32 entry are reserved and must be preserved.
 	*entry = (*entry & ~FAT32_ENTRY_MASK) | (nextCluster & FAT32_ENTRY_MASK);
-
-	// Keep every FAT copy in sync (mirroring).
-	for (uint32_t fat = 0; fat < m_numFats; fat++) {
-		if (md_error_t error = sector.write(sectorOffset + fat * m_sectorsPerFatTable)) {
-			mdError = error;
-			return;
-		}
-	}
+	if (md_error_t error = writeFatSector(sector, sectorOffset)) mdError = error;
 }
 
 /**
@@ -387,30 +513,32 @@ void Fat::flush() {
 }
 
 cluster_t Fat::allocateCluster(cluster_t fromCluster) {
+	if (isFixedRoot(fromCluster)) {
+		// The FAT12/16 root directory can't grow
+		mdError = Fat_rootDirectoryFull;
+		return 0;
+	}
+
 	// Find a free cluster, starting at the hint and wrapping around once. The FAT is
-	// scanned a sector (128 entries) at a time.
+	// read a sector at a time.
 	const cluster_t firstCluster = 2;
 	const cluster_t endCluster = m_clusterCount + 2;
 	cluster_t scanCluster = (m_lastFreeCluster >= firstCluster && m_lastFreeCluster < endCluster)
 		? m_lastFreeCluster : firstCluster;
 
 	{
-		Sector sector(*m_partition);
-		sector_t loadedSector = (sector_t)-1;
+		FatEntryReader reader(*m_partition);
 		for (uint32_t checked = 0; ; checked++) {
 			if (checked >= m_clusterCount) {
 				mdError = Fat_partitionIsFull;
 				return 0;
 			}
-			sector_t wanted = m_reservedSectors + (scanCluster >> 7);
-			if (wanted != loadedSector) {
-				if (md_error_t error = sector.read(wanted)) {
-					mdError = error;
-					return 0;
-				}
-				loadedSector = wanted;
+			cluster_t value;
+			if (md_error_t error = readEntry(reader, scanCluster, &value)) {
+				mdError = error;
+				return 0;
 			}
-			if ((((uint32_t*)sector.m_data)[scanCluster & 127] & FAT32_ENTRY_MASK) == FREE_CLUSTER) break;
+			if (value == FREE_CLUSTER) break;
 			if (++scanCluster >= endCluster) scanCluster = firstCluster;
 		}
 	}
@@ -455,18 +583,14 @@ void Fat::freeChain(cluster_t cluster) {
 
 uint32_t Fat::countFreeClusters() {
 	uint32_t freeCount = 0;
-	Sector sector(*m_partition);
-	sector_t loadedSector = (sector_t)-1;
+	FatEntryReader reader(*m_partition);
 	for (cluster_t cluster = 2; cluster < m_clusterCount + 2; cluster++) {
-		sector_t wanted = m_reservedSectors + (cluster >> 7);
-		if (wanted != loadedSector) {
-			if (md_error_t error = sector.read(wanted)) {
-				mdError = error;
-				return 0;
-			}
-			loadedSector = wanted;
+		cluster_t value;
+		if (md_error_t error = readEntry(reader, cluster, &value)) {
+			mdError = error;
+			return 0;
 		}
-		if ((((uint32_t*)sector.m_data)[cluster & 127] & FAT32_ENTRY_MASK) == FREE_CLUSTER) {
+		if (value == FREE_CLUSTER) {
 			freeCount++;
 		}
 	}
@@ -485,11 +609,28 @@ cluster_t Fat::getEndOfClusterChain() const {
 }
 
 cluster_t Fat::getRootDirectoryCluster() const {
-	return rootDirectory.cluster;
+	return m_rootCluster;
 }
 
 uint32_t Fat::getBytesPerCluster() const {
 	return m_bytesPerCluster;
+}
+
+uint32_t Fat::getClusterBytes(cluster_t cluster) const {
+	return isFixedRoot(cluster) ? m_rootDirectorySectorCount * m_bytesPerSector : m_bytesPerCluster;
+}
+
+bool Fat::locate(cluster_t cluster, uint32_t offset, uint32_t dataSize, sector_t *sector) {
+	if (!isFixedRoot(cluster) && (cluster < 2 || cluster >= m_clusterCount + 2)) {
+		mdError = Fat_clusterOutOfRange;
+		return false;
+	}
+	if (offset + dataSize > getClusterBytes(cluster)) {
+		mdError = Fat_CannotAccessBeyondCluster;
+		return false;
+	}
+	*sector = (isFixedRoot(cluster) ? m_rootSector : clusterToSector(cluster)) + offset / m_bytesPerSector;
+	return true;
 }
 
 uint32_t Fat::getClusterCount() const {
@@ -501,16 +642,8 @@ FatFormat_e Fat::getFormat() const {
 }
 
 void Fat::write(cluster_t cluster, uint32_t offset, const uint8_t *data, uint32_t dataSize) {
-	if (cluster < 2 || cluster >= m_clusterCount + 2) {
-		mdError = Fat_clusterOutOfRange;
-		return;
-	}
-	if (offset + dataSize > m_bytesPerCluster) {
-		mdError = Fat_CannotAccessBeyondCluster;
-		return;
-	}
-
-	sector_t sectorNumber = clusterToSector(cluster) + offset / m_bytesPerSector;
+	sector_t sectorNumber;
+	if (!locate(cluster, offset, dataSize, &sectorNumber)) return;
 	uint32_t sectorOffset = offset % m_bytesPerSector;
 
 	Sector sector(*m_partition);
@@ -539,16 +672,8 @@ void Fat::write(cluster_t cluster, uint32_t offset, const uint8_t *data, uint32_
 }
 
 uint32_t Fat::read(cluster_t cluster, uint32_t offset, uint8_t *data, uint32_t dataSize) {
-	if (cluster < 2 || cluster >= m_clusterCount + 2) {
-		mdError = Fat_clusterOutOfRange;
-		return 0;
-	}
-	if (offset + dataSize > m_bytesPerCluster) {
-		mdError = Fat_CannotAccessBeyondCluster;
-		return 0;
-	}
-
-	sector_t sectorNumber = clusterToSector(cluster) + offset / m_bytesPerSector;
+	sector_t sectorNumber;
+	if (!locate(cluster, offset, dataSize, &sectorNumber)) return 0;
 	uint32_t sectorOffset = offset % m_bytesPerSector;
 	uint32_t bytesRead = 0;
 

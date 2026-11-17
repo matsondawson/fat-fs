@@ -1,7 +1,7 @@
 # fat
 
 A small FAT32 filesystem driver for microcontrollers, written in C++ with no OS
-dependencies. It talks to storage through a one-sector-at-a-time `SectorDevice`
+dependencies, with optional FAT12 and FAT16 support. It talks to storage through a one-sector-at-a-time `SectorDevice`
 interface, so it runs on anything you can read and write 512-byte sectors on:
 an SD card, SPI flash, a RAM disk, or a disk image file on Linux.
 
@@ -16,7 +16,7 @@ src/net/mdawson/filesystem/   the driver (portable)
   File                          File, DirectoryListing, makeDirectory, toShortName
   LongName                      long file name (VFAT) helpers
   CachedSectorDevice            optional write-back block cache
-  FatFormat                     formatFat32()
+  FatFormat                     formatFat32(), formatFat()
   MemorySectorDevice            sparse RAM disk
 platform/posix/FileSectorDevice disk image files and block devices on Linux
 platform/pico/PicoSdCard        SD card over SPI on the RP2040 and RP2350
@@ -32,10 +32,18 @@ cmake/arm-none-eabi.cmake       toolchain file for other Cortex-M targets
 |-----------------------|-----------------------|---------|--------------|
 | `FAT_LONG_FILE_NAMES` | `MFS_LONG_FILE_NAMES` | OFF (ON in `pico/`) | Long file names, UTF-8 API |
 | `FAT_BLOCK_CACHE`     | `MFS_BLOCK_CACHE`     | ON      | `CachedSectorDevice` |
+| `FAT_FAT12_16`        | `MFS_FAT12_16`        | OFF (ON in `pico/`) | FAT12 and FAT16 volumes, and formatting them |
 
-Code size on a Cortex-M0+ (`-Os`): about 7.7 KB with neither option, 8.6 KB with the
-cache, 9.6 KB with long names and 10.5 KB with both. If you don't use CMake,
-define the macros yourself.
+Code size on a Cortex-M0+ (`-Os`), in KB:
+
+| Long names | Cache | FAT32 only | With FAT12/16 |
+|------------|-------|------------|---------------|
+| off        | off   | 7.7        | 8.7           |
+| off        | on    | 8.7        | 9.8           |
+| on         | off   | 9.6        | 10.6          |
+| on         | on    | 10.6       | 11.7          |
+
+If you don't use CMake, define the macros yourself.
 
 ## Building
 
@@ -47,8 +55,9 @@ cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
 
-The test build covers every option combination (`plain`, `lfn`, `cache`,
-`lfn_cache`), whatever the options above are set to:
+The test build covers the option combinations `plain`, `lfn`, `cache`,
+`lfn_cache`, `fat1216` and `lfn_cache_fat1216`, whatever the options above are
+set to:
 
 - `unit_<variant>` (`build/fat_tests_<variant> [filter]`): the portable test suite
   on RAM disks, built with AddressSanitizer and UBSan (turn off with
@@ -56,7 +65,10 @@ The test build covers every option combination (`plain`, `lfn`, `cache`,
   the RAM disk, through a 2-slot write-back cache and through a 1-slot
   write-through cache, so every test also exercises cache eviction. There are
   also cache unit tests, a power loss test, corrupt volume tests and a
-  randomized test that checks the driver against an in-memory model.
+  randomized test that checks the driver against an in-memory model. With
+  FAT12/16 support the tests run again on FAT16 and FAT12 volumes, along with
+  tests of the fixed root directory, FAT12 entries split across sectors and
+  the formatter.
 - `image_<variant>` (`test/image_tests.sh`): cross-checks the driver against
   `mkfs.fat`, `mtools` and `fsck.fat` using disk image files, including long
   names in both directions. It only runs when dosfstools and mtools are
@@ -72,6 +84,7 @@ Nothing touches a real drive. To try the driver by hand, use an image:
 
 ```sh
 build/fatimg disk.img create 64          # 64MB image, formatted FAT32
+build/fatimg_fat1216 -t 16 small.img create 16   # FAT16 (-t 12 for FAT12)
 build/fatimg disk.img mkdir /LOGS
 build/fatimg disk.img put notes.txt /LOGS/NOTES.TXT
 build/fatimg disk.img ls /LOGS
@@ -227,6 +240,22 @@ long names are rejected with `File_invalidName`. Files that other systems
 created with long names can still be opened by their 8.3 alias, and deleting
 them also removes their long name entries.
 
+### FAT12 and FAT16
+
+With `FAT_FAT12_16`, `Fat` also mounts FAT12 and FAT16 volumes, such as SD cards
+of 2 GB and under as they come, and `getFormat()` says which it is. The API is
+the same for all three. To format one:
+
+```cpp
+formatFat(sd, sectorCount, Format_FAT16);   // or Format_FAT12, Format_FAT32
+```
+
+`formatFat` picks the smallest cluster size that keeps the cluster count within
+the type's limits (FAT12 under 4085, FAT16 4085 to 65524), or fails with
+`Fat_formatVolumeTooSmall` / `Fat_formatVolumeTooLarge` for a size you give.
+
+### Errors and new storage
+
 Errors are reported through the global `mdError` (codes in `GlobalError.h`)
 rather than exceptions, so the code works with `-fno-exceptions`.
 
@@ -235,7 +264,11 @@ To support new storage, implement `SectorDevice`: `read`, `write` and
 
 ## Limitations
 
-- FAT32 only. Mounting a FAT12/FAT16 volume fails with an error.
+- FAT12 and FAT16 need `FAT_FAT12_16`. Without it, mounting one fails with
+  `Fat_Fat12FormatUnsupported` or `Fat_Fat16FormatUnsupported`.
+- The FAT12/FAT16 root directory has a fixed number of entries (512 when the
+  driver formats it). Adding one more fails with `Fat_rootDirectoryFull`;
+  subdirectories grow as usual. A long name takes several entries.
 - Long names compare case-insensitively for ASCII letters only. Windows also
   ignores case for other alphabets.
 - Two `File` objects on the same file don't share state: one won't see a size

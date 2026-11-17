@@ -29,10 +29,11 @@ set(CMAKE_CXX_STANDARD 17)
 
 pico_sdk_init()
 
-# Driver features. The test firmware enables both; turn either off with
-# -DFAT_LONG_FILE_NAMES=OFF / -DFAT_BLOCK_CACHE=OFF.
+# Driver features. The test firmware enables them all; turn any off with
+# -DFAT_LONG_FILE_NAMES=OFF / -DFAT_BLOCK_CACHE=OFF / -DFAT_FAT12_16=OFF.
 option(FAT_LONG_FILE_NAMES "Long file name support" ON)
 option(FAT_BLOCK_CACHE "Block cache support" ON)
+option(FAT_FAT12_16 "FAT12 and FAT16 support" ON)
 
 # The SD card's wiring, passed to PicoSdCard at run time. The defaults are
 # md_mpeg's: SPI1 on GP10 to GP13.

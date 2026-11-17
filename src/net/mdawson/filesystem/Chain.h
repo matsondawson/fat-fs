@@ -27,6 +27,8 @@ private:
 
 	/** Move to the next cluster, allocating one if allowed and needed. */
 	bool advance(bool allocate);
+	/** Size of the current cluster (the FAT12/16 fixed root directory is one large one). */
+	uint32_t currentClusterBytes() const;
 
 public:
 	Chain(Fat &fat);

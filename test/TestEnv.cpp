@@ -1,6 +1,6 @@
 #include "TestEnv.h"
 
-TestConfig g_config = { 256, 0, false, false, 200 };
+TestConfig g_config = { 256, 0, false, false, 200, Format_FAT32 };
 
 Disk::Disk(sector_t sectors, uint32_t maxStored)
 	: ram(sectors, maxStored ? maxStored : g_config.ramDiskSectors) {
@@ -22,8 +22,21 @@ SectorDevice &Disk::device() {
 	return ram;
 }
 
-Volume::Volume(uint8_t sectorsPerCluster, sector_t sectors) : disk(sectors), fat(0) {
-	Mfs::formatFat32(disk.device(), sectors, sectorsPerCluster, "TEST");
+uint32_t rootDirectoryClusters() {
+	return g_config.format == Format_FAT32 ? 1 : 0;
+}
+
+static sector_t volumeSectors(uint8_t sectorsPerCluster, sector_t sectors) {
+	switch (g_config.format) {
+	case Format_FAT12: return (sector_t)sectorsPerCluster * 3000 + 100;
+	case Format_FAT16: return (sector_t)sectorsPerCluster * 20000 + 300;
+	default: return sectors;
+	}
+}
+
+Volume::Volume(uint8_t sectorsPerCluster, sector_t sectors)
+	: disk(volumeSectors(sectorsPerCluster, sectors)), fat(0) {
+	Mfs::formatFat(disk.device(), volumeSectors(sectorsPerCluster, sectors), g_config.format, sectorsPerCluster, "TEST");
 	if (mdError) return;
 	fat = new Fat(disk.device());
 }

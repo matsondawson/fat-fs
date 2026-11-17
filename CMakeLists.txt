@@ -25,6 +25,7 @@ endif()
 
 option(FAT_LONG_FILE_NAMES "Long file name (VFAT) support (defines MFS_LONG_FILE_NAMES)" OFF)
 option(FAT_BLOCK_CACHE "Include the CachedSectorDevice block cache (defines MFS_BLOCK_CACHE)" ON)
+option(FAT_FAT12_16 "FAT12 and FAT16 volumes as well as FAT32 (defines MFS_FAT12_16)" OFF)
 
 set(FAT_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/src/net/mdawson/filesystem/CachedSectorDevice.cpp
@@ -39,8 +40,8 @@ set(FAT_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/src/net/mdawson/filesystem/Sector.cpp
 )
 
-# fat_library(<target> <long file names ON/OFF> <block cache ON/OFF>)
-function(fat_library target lfn cache)
+# fat_library(<target> <long file names ON/OFF> <block cache ON/OFF> <FAT12/16 ON/OFF>)
+function(fat_library target lfn cache fat1216)
   add_library(${target} STATIC ${FAT_SOURCES})
   target_include_directories(${target} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_compile_features(${target} PUBLIC cxx_std_11)
@@ -49,6 +50,9 @@ function(fat_library target lfn cache)
   endif()
   if(cache)
     target_compile_definitions(${target} PUBLIC MFS_BLOCK_CACHE)
+  endif()
+  if(fat1216)
+    target_compile_definitions(${target} PUBLIC MFS_FAT12_16)
   endif()
   if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(${target} PRIVATE -Wall -Wextra)
@@ -60,6 +64,7 @@ function(fat_testsuite target library)
   add_library(${target} STATIC EXCLUDE_FROM_ALL
     ${CMAKE_CURRENT_SOURCE_DIR}/test/CacheTests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test/CountingSectorDevice.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/test/Fat1216Tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test/FatTests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test/LongNameTests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test/RobustnessTests.cpp
@@ -75,7 +80,7 @@ endfunction()
 # The driver: portable, no OS dependencies. Link it into firmware or host code
 # and supply a SectorDevice for your storage.
 # ---------------------------------------------------------------------------
-fat_library(fat ${FAT_LONG_FILE_NAMES} ${FAT_BLOCK_CACHE})
+fat_library(fat ${FAT_LONG_FILE_NAMES} ${FAT_BLOCK_CACHE} ${FAT_FAT12_16})
 
 if(NOT FAT_IS_TOP_LEVEL)
   fat_testsuite(fat_testsuite fat)
@@ -123,17 +128,21 @@ if(FAT_BUILD_TESTS)
   option(FAT_SANITIZE "Build host tests with address/undefined sanitizers" ON)
 
   # Every feature combination is built and tested, whatever the options above say.
-  foreach(variant plain lfn cache lfn_cache)
+  foreach(variant plain lfn cache lfn_cache fat1216 lfn_cache_fat1216)
     set(lfn OFF)
     set(cache OFF)
+    set(fat1216 OFF)
     if(variant MATCHES "lfn")
       set(lfn ON)
     endif()
     if(variant MATCHES "cache")
       set(cache ON)
     endif()
+    if(variant MATCHES "fat1216")
+      set(fat1216 ON)
+    endif()
 
-    fat_library(fat_${variant} ${lfn} ${cache})
+    fat_library(fat_${variant} ${lfn} ${cache} ${fat1216})
     fat_testsuite(fat_testsuite_${variant} fat_${variant})
     add_executable(fat_tests_${variant} test/host_main.cpp)
     target_link_libraries(fat_tests_${variant} PRIVATE fat_testsuite_${variant})

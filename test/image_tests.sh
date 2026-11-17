@@ -183,6 +183,65 @@ else
 	echo "[ SKIP ] long name cross-checks (fatimg built without long file names)"
 fi
 
+if "$FATIMG" --features | grep -qx fat12_16; then
+	# 13. FAT16 and FAT12: images from mkfs.fat and from the driver, written by the
+	#     driver (fixed root directory, subdirectories, multi cluster files) and
+	#     checked by mtools and fsck.fat.
+	for bits in 16 12; do
+		if [ $bits = 16 ]; then size_kb=32768; else size_kb=4096; fi
+		for maker in mkfs driver; do
+			img="$WORK/fat$bits-$maker.img"
+			rm -f "$img"
+			if [ $maker = mkfs ]; then
+				mkfs.fat -F $bits -S 512 -s 2 -n TESTVOL -C "$img" $size_kb >/dev/null
+			else
+				"$FATIMG" -t $bits "$img" create $((size_kb / 1024)) || fail "FAT$bits format" "fatimg create"
+			fi
+			name="FAT$bits ($maker image)"
+			if ! "$FATIMG" "$img" info | grep -q "^FAT$bits,"; then
+				fail "$name" "not mounted as FAT$bits"
+				continue
+			fi
+			# 900 KB: on FAT12 with 1 KB clusters its chain crosses the entries split
+			# across FAT sectors (clusters 341 and 682)
+			make_data "$WORK/a.bin" 900000
+			make_data "$WORK/b.bin" 3000
+			ok=1
+			"$FATIMG" "$img" put "$WORK/a.bin" /A.BIN || ok=0
+			"$FATIMG" "$img" mkdir /DIR || ok=0
+			"$FATIMG" "$img" mkdir /DIR/SUB || ok=0
+			"$FATIMG" "$img" put "$WORK/b.bin" /DIR/SUB/B.BIN || ok=0
+			for i in $(seq -w 1 60); do
+				echo "root $i" > "$WORK/f.txt"
+				"$FATIMG" "$img" put "$WORK/f.txt" "/R$i.TXT" || ok=0
+			done
+			"$FATIMG" "$img" rm /R30.TXT || ok=0
+			# mtools writes, the driver reads
+			mcopy -i "$img" "$WORK/b.bin" ::DIR/M.BIN || ok=0
+			"$FATIMG" "$img" get /DIR/M.BIN "$WORK/m.out" && cmp -s "$WORK/b.bin" "$WORK/m.out" || ok=0
+			count=$(mdir -b -i "$img" :: 2>/dev/null | grep -c 'R[0-9]*\.TXT')
+			if [ $ok = 1 ] && [ "$count" = 59 ] &&
+				mtype -i "$img" ::A.BIN > "$WORK/a.out" && cmp -s "$WORK/a.bin" "$WORK/a.out" &&
+				mtype -i "$img" ::DIR/SUB/B.BIN > "$WORK/b.out" && cmp -s "$WORK/b.bin" "$WORK/b.out" &&
+				[ "$(mtype -i "$img" ::R45.TXT)" = "root 45" ] && fsck_clean "$img"; then
+				pass "$name: driver writes, mtools reads, fsck clean"
+			else
+				fail "$name: driver writes, mtools reads, fsck clean" "found $count root files"
+			fi
+		done
+	done
+else
+	# 13. Without FAT12/16 support, such volumes are refused rather than misread
+	img="$WORK/fat16-refused.img"
+	rm -f "$img"
+	mkfs.fat -F 16 -S 512 -s 2 -C "$img" 32768 >/dev/null
+	if ! "$FATIMG" "$img" info >/dev/null 2>&1; then
+		pass "FAT16 volume refused without FAT12/16 support"
+	else
+		fail "FAT16 volume refused without FAT12/16 support" "it mounted"
+	fi
+fi
+
 echo
 if [ $failures -ne 0 ]; then
 	echo "$failures image test(s) failed (images kept in $WORK)"
