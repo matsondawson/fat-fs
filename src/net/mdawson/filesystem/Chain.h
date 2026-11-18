@@ -26,6 +26,12 @@ private:
 	uint32_t m_clusterOffset;
 	cluster_t m_firstCluster;
 	cluster_t m_currentCluster;
+	/**
+	 * How many of the clusters after the current one are known to follow it one
+	 * after another (from the FAT sector last read for this chain), so moving on
+	 * needs no FAT lookup. Lets several files read at once each avoid the FAT.
+	 */
+	uint32_t m_run;
 
 	/** Move to the next cluster, allocating one if allowed and needed. moved is false at the end. */
 	MFS_NODISCARD md_error_t advance(bool allocate, bool &moved);

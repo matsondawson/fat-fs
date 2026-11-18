@@ -329,6 +329,19 @@ If power is lost, the volume still mounts. Everything written before the last
 flush is intact; later writes may be partly there (`test_power_loss` checks
 this). After a card swap, call `cache.invalidate()` to drop stale sectors.
 
+### Memory and speed
+
+Mounting a volume allocates two 512-byte buffers: one for the FAT, one for
+everything else. Reads and writes of whole, sector-aligned 512 bytes go
+straight between your buffer and the card; only partial sectors use the
+volume's buffer. Nothing else is allocated while reading or writing a file.
+
+The FAT buffer keeps the last FAT sector, and each open file remembers how
+many of its next clusters follow one another, so a file whose clusters are
+consecutive (usual on a freshly written card) looks up the FAT once per FAT
+sector its chain covers (128 clusters on FAT32) rather than at every cluster,
+even with several files read in turn.
+
 ### Long file names
 
 With `MFS_LONG_FILE_NAMES`, names and paths are UTF-8 and can be long

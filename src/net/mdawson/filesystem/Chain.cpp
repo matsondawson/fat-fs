@@ -15,6 +15,7 @@ void Chain::init(cluster_t firstCluster) {
 
 void Chain::reset() {
 	m_currentCluster = m_firstCluster;
+	m_run = 0;
 	m_chainPosition = 0;
 	m_clusterOffset = 0;
 }
@@ -64,10 +65,15 @@ md_error_t Chain::advance(bool allocate, bool &moved) {
 	}
 
 	cluster_t nextCluster;
-	if (md_error_t error = m_fat->getEntry(m_currentCluster, nextCluster)) return error;
-	if (m_fat->isEndOfClusterChain(nextCluster)) {
-		if (!allocate) return 0;
-		if (md_error_t error = m_fat->allocateCluster(m_currentCluster, nextCluster)) return error;
+	if (m_run > 0) {
+		nextCluster = m_currentCluster + 1;
+		m_run--;
+	} else {
+		if (md_error_t error = m_fat->getEntry(m_currentCluster, nextCluster, m_run)) return error;
+		if (m_fat->isEndOfClusterChain(nextCluster)) {
+			if (!allocate) return 0;
+			if (md_error_t error = m_fat->allocateCluster(m_currentCluster, nextCluster)) return error;
+		}
 	}
 
 	m_chainPosition += currentClusterBytes();
@@ -87,6 +93,8 @@ md_error_t Chain::truncate() {
 	cluster_t next;
 	if (md_error_t error = m_fat->getEntry(m_currentCluster, next)) return error;
 	if (!m_fat->isEndOfClusterChain(next)) {
+		// The clusters after this one are going
+		m_run = 0;
 		if (md_error_t error = m_fat->setEntry(m_currentCluster, m_fat->getEndOfClusterChain() | 0x7)) return error;
 		return m_fat->freeChain(next);
 	}
