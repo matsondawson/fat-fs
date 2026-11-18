@@ -187,7 +187,7 @@ static_assert(sizeof(DirectoryEntryLong) == 32, "DirectoryEntryLong must be 32 b
 		// Next File open on the same volume (see Fat::m_openFiles)
 		File *m_nextOpen;
 
-		md_error_t writeDirectoryEntry();
+		MFS_NODISCARD md_error_t writeDirectoryEntry();
 		void touch();
 		/** Remove this File from the volume's open files and mark it closed. */
 		void unlinkOpen();
@@ -212,7 +212,7 @@ static_assert(sizeof(DirectoryEntryLong) == 32, "DirectoryEntryLong must be 32 b
 		 * File_alreadyOpen if this File, or another File, has the file open (by any
 		 * of its names).
 		 */
-		md_error_t open(const char *path, const char *name, bool create = false);
+		MFS_NODISCARD md_error_t open(const char *path, const char *name, bool create = false);
 
 		bool isOpen() const;
 
@@ -224,19 +224,19 @@ static_assert(sizeof(DirectoryEntryLong) == 32, "DirectoryEntryLong must be 32 b
 		 * @param bytesRead Set to the number of bytes read: less than requested at
 		 *        the end of the file, and set even when an error stops the read.
 		 */
-		md_error_t read(uint8_t *data, uint32_t bytesToRead, uint32_t &bytesRead);
+		MFS_NODISCARD md_error_t read(uint8_t *data, uint32_t bytesToRead, uint32_t &bytesRead);
 
 		/**
 		 * Write data to the file at the current position, growing the file as needed.
 		 * If the write stops part way (e.g. the volume is full) the file keeps what
 		 * was written.
 		 */
-		md_error_t write(const uint8_t *data, uint32_t bytesToWrite);
+		MFS_NODISCARD md_error_t write(const uint8_t *data, uint32_t bytesToWrite);
 
 		/**
 		 * Seek to an position in a file (0 to length() inclusive).
 		 */
-		md_error_t seek(uint32_t position);
+		MFS_NODISCARD md_error_t seek(uint32_t position);
 
 		/**
 		 * Get the length of the file.
@@ -251,24 +251,24 @@ static_assert(sizeof(DirectoryEntryLong) == 32, "DirectoryEntryLong must be 32 b
 		/**
 		 * Truncate a file at the current position.
 		 */
-		md_error_t truncate();
+		MFS_NODISCARD md_error_t truncate();
 
 		/**
 		 * Store the directory entry (size, times) if it changed and flush the device
 		 * (e.g. a write-back cache), so that everything written so far is on the media.
 		 */
-		md_error_t flush();
+		MFS_NODISCARD md_error_t flush();
 
 		/**
 		 * Flush and close. The File is closed even if flushing fails (the error is
 		 * returned). It can be opened again afterwards.
 		 */
-		md_error_t close();
+		MFS_NODISCARD md_error_t close();
 
 		/**
 		 * Delete a file.  Called remove as delete is reserved. The File is closed afterwards.
 		 */
-		md_error_t remove();
+		MFS_NODISCARD md_error_t remove();
 	};
 
 	/**
@@ -309,7 +309,7 @@ static_assert(sizeof(DirectoryEntryLong) == 32, "DirectoryEntryLong must be 32 b
 
 		void resetRun();
 		/** Write count entries to consecutive free slots, growing the directory as needed. */
-		md_error_t writeEntries(const DirectoryEntry *entries, uint32_t count);
+		MFS_NODISCARD md_error_t writeEntries(const DirectoryEntry *entries, uint32_t count);
 
 	public:
 		explicit DirectoryListing(Fat &drive);
@@ -321,10 +321,10 @@ static_assert(sizeof(DirectoryEntryLong) == 32, "DirectoryEntryLong must be 32 b
 		 *        DirectoryListing_directoryNotFound, DirectoryListing_invalidPathFormat,
 		 *        Fat_notMounted or a device error.
 		 */
-		md_error_t open(const char *path);
+		MFS_NODISCARD md_error_t open(const char *path);
 
 		/** Error from the last next() or find(), or DirectoryListing_notOpen. */
-		md_error_t error() const;
+		MFS_NODISCARD md_error_t error() const;
 
 		/** Go back to the first entry of this directory. */
 		void reset();
@@ -371,22 +371,22 @@ static_assert(sizeof(DirectoryEntryLong) == 32, "DirectoryEntryLong must be 32 b
 		 * Create a new entry called name, with long name entries if needed.
 		 * Does not check whether name already exists. Afterwards the current entry is the new entry.
 		 */
-		md_error_t createEntry(const char *name, uint8_t attr, cluster_t firstCluster);
+		MFS_NODISCARD md_error_t createEntry(const char *name, uint8_t attr, cluster_t firstCluster);
 
 		/**
 		 * Store entry in the first free slot, growing the directory if needed.
 		 * Afterwards the current entry is the new entry.
 		 */
-		md_error_t addEntry(const DirectoryEntry &entry);
+		MFS_NODISCARD md_error_t addEntry(const DirectoryEntry &entry);
 
 		/** Add an empty file entry; name in 11 character directory form. */
-		md_error_t addFileEntry(const char *name);
+		MFS_NODISCARD md_error_t addFileEntry(const char *name);
 	};
 
 	/**
 	 * Create directory name inside directory path.
 	 */
-	md_error_t makeDirectory(Fat &drive, const char *path, const char *name);
+	MFS_NODISCARD md_error_t makeDirectory(Fat &drive, const char *path, const char *name);
 
 MFS_NAMESPACE_END
 

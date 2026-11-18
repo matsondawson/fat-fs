@@ -40,6 +40,20 @@
 #error "The FAT driver needs a little-endian CPU"
 #endif
 
+/**
+ * On functions that return an md_error_t, so that ignoring one is a compiler
+ * warning. Cast the call to void where an error really doesn't matter.
+ * [[nodiscard]] from C++17; before that only Clang's attribute, because GCC's
+ * can't be silenced with a cast to void.
+ */
+#if __cplusplus >= 201703L
+#define MFS_NODISCARD [[nodiscard]]
+#elif defined(__clang__)
+#define MFS_NODISCARD __attribute__((warn_unused_result))
+#else
+#define MFS_NODISCARD
+#endif
+
 MFS_NAMESPACE_BEGIN
 
 /**

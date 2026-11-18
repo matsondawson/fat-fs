@@ -207,9 +207,9 @@ static void test_create_and_open_long_name() {
 	Volume v;
 	CHECK_OK(v.error);
 	CHECK_OK(writeFile(*v.fat, "/", "My Long File Name.txt", 1000, 3, 300));
-	CHECK(verifyFile(*v.fat, "/", "My Long File Name.txt", 1000, 3, 300));
-	CHECK(verifyFile(*v.fat, "/", "MY LONG FILE NAME.TXT", 1000, 3, 300)); // case insensitive
-	CHECK(verifyFile(*v.fat, "/", "MYLONG~1.TXT", 1000, 3, 300));          // by short alias
+	CHECK_OK(verifyFile(*v.fat, "/", "My Long File Name.txt", 1000, 3, 300));
+	CHECK_OK(verifyFile(*v.fat, "/", "MY LONG FILE NAME.TXT", 1000, 3, 300)); // case insensitive
+	CHECK_OK(verifyFile(*v.fat, "/", "MYLONG~1.TXT", 1000, 3, 300));          // by short alias
 
 	DirectoryListing dl(*v.fat);
 	CHECK_OK(dl.open("/"));
@@ -253,7 +253,7 @@ static void test_alias_numbering() {
 			printf("    %s got alias %.11s, expected %s\n", longName, (const char*)dl.directoryEntry().DIR_Name, expected);
 			CHECK(false);
 		}
-		CHECK(verifyFile(*v.fat, "/", longName, (uint32_t)i, (uint32_t)i, 64));
+		CHECK_OK(verifyFile(*v.fat, "/", longName, (uint32_t)i, (uint32_t)i, 64));
 	}
 }
 
@@ -288,7 +288,7 @@ static void test_unicode_names() {
 	char path[64];
 	snprintf(path, sizeof(path), "/%s", dirName);
 	CHECK_OK(writeFile(*v.fat, path, fileName, 77, 9, 77));
-	CHECK(verifyFile(*v.fat, path, fileName, 77, 9, 77));
+	CHECK_OK(verifyFile(*v.fat, path, fileName, 77, 9, 77));
 
 	DirectoryListing dl(*v.fat);
 	CHECK_OK(dl.open(path));
@@ -308,7 +308,7 @@ static void test_name_lengths() {
 	memset(name, 'n', 255);
 	name[255] = 0;
 	CHECK_OK(writeFile(*v.fat, "/", name, 5, 1, 5)); // the longest allowed: 20 entries
-	CHECK(verifyFile(*v.fat, "/", name, 5, 1, 5));
+	CHECK_OK(verifyFile(*v.fat, "/", name, 5, 1, 5));
 	DirectoryListing dl(*v.fat);
 	CHECK_OK(dl.open("/"));
 	CHECK(dl.find(name));
@@ -324,7 +324,7 @@ static void test_name_lengths() {
 
 	// Trailing periods and spaces are ignored.
 	CHECK_OK(writeFile(*v.fat, "/", "trailing. . ", 3, 2, 3));
-	CHECK(verifyFile(*v.fat, "/", "trailing", 3, 2, 3));
+	CHECK_OK(verifyFile(*v.fat, "/", "trailing", 3, 2, 3));
 }
 
 static void test_invalid_long_names() {
@@ -343,7 +343,7 @@ static void test_invalid_long_names() {
 	CHECK_EQ(countUsedSlots(*v.fat, "/"), 0);
 	// Characters valid in long names but not in short ones are fine.
 	CHECK_OK(writeFile(*v.fat, "/", "a+b=c [1], d;e.txt", 4, 1, 4));
-	CHECK(verifyFile(*v.fat, "/", "a+b=c [1], d;e.txt", 4, 1, 4));
+	CHECK_OK(verifyFile(*v.fat, "/", "a+b=c [1], d;e.txt", 4, 1, 4));
 }
 
 static void test_runs_span_clusters_and_remove() {
@@ -361,7 +361,7 @@ static void test_runs_span_clusters_and_remove() {
 	CHECK_EQ(countEntries(*v.fat, "/"), count);
 	for (int i = 0; i < count; i++) {
 		snprintf(name, sizeof(name), "A rather long file name with number %02d.data", i);
-		CHECK(verifyFile(*v.fat, "/", name, 100 + (uint32_t)i, (uint32_t)i, 64));
+		CHECK_OK(verifyFile(*v.fat, "/", name, 100 + (uint32_t)i, (uint32_t)i, 64));
 	}
 	// Remove every other file: all their entries must go.
 	for (int i = 0; i < count; i += 2) {
@@ -375,7 +375,7 @@ static void test_runs_span_clusters_and_remove() {
 	CHECK_EQ(countEntries(*v.fat, "/"), remaining);
 	for (int i = 1; i < count; i += 2) {
 		snprintf(name, sizeof(name), "A rather long file name with number %02d.data", i);
-		CHECK(verifyFile(*v.fat, "/", name, 100 + (uint32_t)i, (uint32_t)i, 64));
+		CHECK_OK(verifyFile(*v.fat, "/", name, 100 + (uint32_t)i, (uint32_t)i, 64));
 	}
 	// New names reuse the freed runs instead of growing the directory.
 	uint32_t freeBefore;
@@ -398,9 +398,9 @@ static void test_long_directory_paths() {
 	CHECK_OK(makeDirectory(*v.fat, "/My Projects", "Second Level Directory"));
 	CHECK_EQ(makeDirectory(*v.fat, "/", "my projects"), File_alreadyExists);
 	CHECK_OK(writeFile(*v.fat, "/My Projects/Second Level Directory", "Read Me First.txt", 2000, 5, 700));
-	CHECK(verifyFile(*v.fat, "/my projects/SECOND LEVEL DIRECTORY", "read me first.txt", 2000, 5, 700));
-	CHECK(verifyFile(*v.fat, "/MYPROJ~1/SECOND~1", "README~1.TXT", 2000, 5, 700));
-	CHECK(verifyFile(*v.fat, "/My Projects/Second Level Directory/../Second Level Directory",
+	CHECK_OK(verifyFile(*v.fat, "/my projects/SECOND LEVEL DIRECTORY", "read me first.txt", 2000, 5, 700));
+	CHECK_OK(verifyFile(*v.fat, "/MYPROJ~1/SECOND~1", "README~1.TXT", 2000, 5, 700));
+	CHECK_OK(verifyFile(*v.fat, "/My Projects/Second Level Directory/../Second Level Directory",
 	                 "Read Me First.txt", 2000, 5, 700));
 	DirectoryListing missing(*v.fat);
 	CHECK_EQ(missing.open("/My Projects/Nope"), DirectoryListing_directoryNotFound);

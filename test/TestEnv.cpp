@@ -47,10 +47,11 @@ Volume::~Volume() {
 }
 
 md_error_t Volume::remount() {
-	if (fat) fat->flush();
+	md_error_t flushError = fat ? fat->flush() : 0;
 	delete fat;
 	fat = new Fat(disk.device());
 	error = fat->mount();
+	if (!error) error = flushError;
 	return error;
 }
 
@@ -84,42 +85,53 @@ md_error_t writeFile(Fat &fat, const char *path, const char *name, uint32_t leng
 	return file.close();
 }
 
-bool verifyFile(Fat &fat, const char *path, const char *name, uint32_t length, uint32_t seed, uint32_t chunk) {
+md_error_t verifyFile(Fat &fat, const char *path, const char *name, uint32_t length, uint32_t seed, uint32_t chunk) {
 	File file(fat);
-	if (file.open(path, name) || file.length() != length) return false;
+	if (md_error_t error = file.open(path, name)) return error;
+	if (file.length() != length) return TEST_DATA_MISMATCH;
 	static uint8_t buffer[700];
 	if (chunk > sizeof(buffer)) chunk = sizeof(buffer);
 	uint32_t done = 0;
 	for (;;) {
 		uint32_t n;
-		if (file.read(buffer, chunk, n)) return false;
+		if (md_error_t error = file.read(buffer, chunk, n)) return error;
 		if (n == 0) break;
-		if (!matchesPattern(buffer, n, done, seed)) return false;
+		if (!matchesPattern(buffer, n, done, seed)) return TEST_DATA_MISMATCH;
 		done += n;
 	}
-	return done == length;
+	return done == length ? 0 : TEST_DATA_MISMATCH;
+}
+
+md_error_t countEntries(Fat &fat, const char *path, int &count) {
+	count = 0;
+	DirectoryListing dl(fat);
+	if (md_error_t error = dl.open(path)) return error;
+	while (dl.next()) count++;
+	return dl.error();
 }
 
 int countEntries(Fat &fat, const char *path) {
-	DirectoryListing dl(fat);
-	if (dl.open(path)) return -1;
-	int count = 0;
-	while (dl.next()) count++;
-	return dl.error() ? -1 : count;
+	int count;
+	return countEntries(fat, path, count) ? -1 : count;
 }
 
-int countUsedSlots(Fat &fat, const char *path) {
+md_error_t countUsedSlots(Fat &fat, const char *path, int &count) {
+	count = 0;
 	DirectoryListing dl(fat);
-	if (dl.open(path)) return -1;
+	if (md_error_t error = dl.open(path)) return error;
 	Chain chain(fat);
 	chain.init(dl.startCluster());
 	DirectoryEntry entry;
-	int used = 0;
 	for (;;) {
 		uint32_t n;
-		if (chain.read(reinterpret_cast<uint8_t*>(&entry), sizeof(entry), n)) return -1;
+		if (md_error_t error = chain.read(reinterpret_cast<uint8_t*>(&entry), sizeof(entry), n)) return error;
 		if (n != sizeof(entry) || entry.DIR_Name[0] == DIR_ENTRY_END) break;
-		if (entry.DIR_Name[0] != DIR_ENTRY_DELETED) used++;
+		if (entry.DIR_Name[0] != DIR_ENTRY_DELETED) count++;
 	}
-	return used;
+	return 0;
+}
+
+int countUsedSlots(Fat &fat, const char *path) {
+	int count;
+	return countUsedSlots(fat, path, count) ? -1 : count;
 }

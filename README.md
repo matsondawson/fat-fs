@@ -366,6 +366,10 @@ error: `Fat` then `mount()`, `Partition` then `open()`, `File` and
 return whether they found an entry, so they can drive a loop; when they return
 false, `error()` tells the end of the directory (0) from a failure.
 
+Functions that return an `md_error_t` are marked `[[nodiscard]]` (C++17, or
+Clang's equivalent before that), so ignoring an error is a compiler warning.
+Where an error really doesn't matter, cast the call to `void`.
+
 To support new storage, implement `Mfs::SectorDevice`: `read`, `write` and
 `getBytesPerSector` (must be 512).
 

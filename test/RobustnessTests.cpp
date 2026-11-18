@@ -135,14 +135,8 @@ static void test_cluster_loop_in_directory_is_detected() {
 	CHECK_EQ(setRawFatEntry(v.disk.device(), directory, directory), 0);
 	CHECK_OK(v.remount());
 
-	CHECK_EQ(countEntries(*v.fat, path), -1);
-	{
-		// countEntries only reports failure; check it is the loop that was found.
-		DirectoryListing dl(*v.fat);
-		CHECK_OK(dl.open(path));
-		while (dl.next()) {}
-		CHECK_EQ(dl.error(), Chain_loopDetected);
-	}
+	int count;
+	CHECK_EQ(countEntries(*v.fat, path, count), Chain_loopDetected);
 	File missing(*v.fat);
 	CHECK_EQ(missing.open(path, "NOPE"), Chain_loopDetected);
 }
@@ -161,7 +155,7 @@ static void test_cluster_loop_in_file() {
 	CHECK_OK(v.remount());
 
 	// Reads stop at the file size, so the loop is harmless there.
-	CHECK(verifyFile(*v.fat, "/", "LOOP.BIN", 1500, 1, 500));
+	CHECK_OK(verifyFile(*v.fat, "/", "LOOP.BIN", 1500, 1, 500));
 	// Deleting must terminate.
 	File file(*v.fat);
 	CHECK_OK(file.open("/", "LOOP.BIN"));
@@ -215,7 +209,7 @@ static void test_disk_full() {
 	CHECK_OK(file.close());
 	CHECK_OK(v.fat->countFreeClusters(freeClusters));
 	CHECK_EQ(freeClusters, 0);
-	CHECK(verifyFile(*v.fat, "/", "FULL.BIN", 512 * 3, 4, 512));
+	CHECK_OK(verifyFile(*v.fat, "/", "FULL.BIN", 512 * 3, 4, 512));
 
 	CHECK_EQ(makeDirectory(*v.fat, "/", "NEWDIR"), Fat_partitionIsFull);
 

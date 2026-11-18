@@ -38,8 +38,8 @@ public:
 	/** Flush writes to the underlying storage. */
 	void sync();
 
-	md_error_t read(uint8_t* data, sector_t sector) override;
-	md_error_t write(const uint8_t* data, sector_t sector) override;
+	MFS_NODISCARD md_error_t read(uint8_t* data, sector_t sector) override;
+	MFS_NODISCARD md_error_t write(const uint8_t* data, sector_t sector) override;
 	uint32_t getBytesPerSector() const override;
 };
 

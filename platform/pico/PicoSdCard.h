@@ -106,7 +106,7 @@ public:
 	 * @return 0, SectorDevice_notPresent (no card), or SectorDevice_notReady
 	 *         (it didn't start, or the pins are wrong); lastError() says why.
 	 */
-	md_error_t begin();
+	MFS_NODISCARD md_error_t begin();
 
 	/** Why begin() or the last read or write failed, or "" if it didn't. */
 	const char *lastError() const { return m_lastError; }
@@ -127,11 +127,11 @@ public:
 	const Stats &getStats() const { return m_stats; }
 	void resetStats();
 
-	md_error_t read(uint8_t *data, sector_t sector) override;
-	md_error_t write(const uint8_t *data, sector_t sector) override;
+	MFS_NODISCARD md_error_t read(uint8_t *data, sector_t sector) override;
+	MFS_NODISCARD md_error_t write(const uint8_t *data, sector_t sector) override;
 	uint32_t getBytesPerSector() const override { return 512; }
 	/** Waits for any read ahead and closes the read stream, leaving the card idle. */
-	md_error_t flush() override;
+	MFS_NODISCARD md_error_t flush() override;
 
 private:
 	spi_inst_t *m_spi;
@@ -178,8 +178,8 @@ private:
 	/** Finishes any read ahead and closes the stream. @return false if the card didn't stop. */
 	bool idle();
 	void releaseChannels();
-	md_error_t checkAccess(sector_t sector);
-	md_error_t fail(md_error_t error, const char *why);
+	MFS_NODISCARD md_error_t checkAccess(sector_t sector);
+	MFS_NODISCARD md_error_t fail(md_error_t error, const char *why);
 };
 
 MFS_NAMESPACE_END

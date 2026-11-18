@@ -18,7 +18,7 @@ MFS_NAMESPACE_BEGIN
 	 * Fails with Fat_formatVolumeTooSmall (FAT32 needs at least 65525 clusters,
 	 * about 33MB with 512 byte clusters), Fat_formatInvalidClusterSize or a device error.
 	 */
-	md_error_t formatFat32(SectorDevice &device, sector_t sectorCount, uint8_t sectorsPerCluster = 0,
+	MFS_NODISCARD md_error_t formatFat32(SectorDevice &device, sector_t sectorCount, uint8_t sectorsPerCluster = 0,
 	                       const char *label = nullptr, uint32_t volumeId = 0x4D465321);
 
 	/**
@@ -34,7 +34,7 @@ MFS_NAMESPACE_BEGIN
 	 * Fails with Fat_formatVolumeTooSmall or Fat_formatVolumeTooLarge when the
 	 * cluster count doesn't suit the type.
 	 */
-	md_error_t formatFat(SectorDevice &device, sector_t sectorCount, FatFormat format, uint8_t sectorsPerCluster = 0,
+	MFS_NODISCARD md_error_t formatFat(SectorDevice &device, sector_t sectorCount, FatFormat format, uint8_t sectorsPerCluster = 0,
 	                     const char *label = nullptr, uint32_t volumeId = 0x4D465321);
 
 MFS_NAMESPACE_END

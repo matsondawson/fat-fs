@@ -299,9 +299,9 @@ static bool workload(Fat &fat) {
 	}
 	// ...and walking a long cluster chain (a 50KB file, 100 clusters) twice.
 	if (writeFile(fat, "/", "BIG.BIN", 50000, 6, 700)) return false;
-	bool ok = verifyFile(fat, "/", "BIG.BIN", 50000, 6, 700);
-	ok = verifyFile(fat, "/", "BIG.BIN", 50000, 6, 700) && ok;
-	return verifyFile(fat, "/", "LOG.TXT", 400 * 24, 5, 100) && ok;
+	bool ok = verifyFile(fat, "/", "BIG.BIN", 50000, 6, 700) == 0;
+	ok = verifyFile(fat, "/", "BIG.BIN", 50000, 6, 700) == 0 && ok;
+	return verifyFile(fat, "/", "LOG.TXT", 400 * 24, 5, 100) == 0 && ok;
 }
 
 static void test_cache_reduces_device_io() {
@@ -388,7 +388,7 @@ static void test_power_loss() {
 	CHECK_OK(fat.mount());
 	CHECK(fat.isMounted());
 	// ...everything flushed must be intact...
-	CHECK(verifyFile(fat, "/", "SAFE.BIN", 3000, 1, 700));
+	CHECK_OK(verifyFile(fat, "/", "SAFE.BIN", 3000, 1, 700));
 	{
 		File file(fat);
 		CHECK_OK(file.open("/", "FLUSHED.TXT"));

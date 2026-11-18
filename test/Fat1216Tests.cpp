@@ -56,12 +56,12 @@ static void test_root_directory_is_fixed() {
 		CHECK_OK(victim.remove());
 	}
 	CHECK_OK(writeFile(*v.fat, "/", "EXTRA.TXT", 1000, 5, 300));
-	CHECK(verifyFile(*v.fat, "/", "EXTRA.TXT", 1000, 5, 300));
-	CHECK(verifyFile(*v.fat, "/", "F511.TXT", 0, 0, 10));
+	CHECK_OK(verifyFile(*v.fat, "/", "EXTRA.TXT", 1000, 5, 300));
+	CHECK_OK(verifyFile(*v.fat, "/", "F511.TXT", 0, 0, 10));
 
 	CHECK_OK(v.remount());
 	CHECK_EQ(countEntries(*v.fat, "/"), (int)ROOT_ENTRIES);
-	CHECK(verifyFile(*v.fat, "/", "EXTRA.TXT", 1000, 5, 300));
+	CHECK_OK(verifyFile(*v.fat, "/", "EXTRA.TXT", 1000, 5, 300));
 }
 
 #ifdef MFS_LONG_FILE_NAMES
@@ -107,7 +107,7 @@ static void test_dotdot_of_top_level_directory_is_cluster_0() {
 	CHECK_EQ(entry.DIR_FstClusHI, 0);
 	CHECK_EQ(entry.DIR_FstClusLO, 0);
 	CHECK_OK(writeFile(*v.fat, "/SUB/..", "TOP.TXT", 100, 3, 100));
-	CHECK(verifyFile(*v.fat, "/", "TOP.TXT", 100, 3, 100));
+	CHECK_OK(verifyFile(*v.fat, "/", "TOP.TXT", 100, 3, 100));
 	CHECK_EQ(countEntries(*v.fat, "/"), 2);
 }
 
@@ -155,7 +155,7 @@ static void test_file_crossing_split_fat_entries() {
 	const uint32_t length = 800 * CLUSTER_BYTES + 77;
 	CHECK_OK(writeFile(*v.fat, "/", "BIG.BIN", length, 9, 700));
 	CHECK_OK(v.remount());
-	CHECK(verifyFile(*v.fat, "/", "BIG.BIN", length, 9, 512));
+	CHECK_OK(verifyFile(*v.fat, "/", "BIG.BIN", length, 9, 512));
 	uint32_t freeClusters;
 	CHECK_OK(v.fat->countFreeClusters(freeClusters));
 	CHECK_EQ(freeClusters, v.fat->getClusterCount() - 801);
@@ -167,7 +167,7 @@ static void test_file_crossing_split_fat_entries() {
 	}
 	CHECK_OK(v.fat->countFreeClusters(freeClusters));
 	CHECK_EQ(freeClusters, v.fat->getClusterCount() - 400);
-	CHECK(verifyFile(*v.fat, "/", "BIG.BIN", 400 * CLUSTER_BYTES, 9, 512));
+	CHECK_OK(verifyFile(*v.fat, "/", "BIG.BIN", 400 * CLUSTER_BYTES, 9, 512));
 }
 
 static void test_format_sizes() {

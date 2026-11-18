@@ -29,7 +29,7 @@ public:
 	 * @return The errorCode.
 	 * @errors SectorDevice_notPresent, SectorDevice_notReady, SectorDevice_changed, SectorDevice_sectorOutOfRange
 	 */
-	virtual md_error_t read(uint8_t* data, sector_t sector) = 0;
+	MFS_NODISCARD virtual md_error_t read(uint8_t* data, sector_t sector) = 0;
 
 	/**
 	 * Write a sector the the device.
@@ -39,7 +39,7 @@ public:
 	 * @errors SectorDevice_notPresent, SectorDevice_notReady, SectorDevice_changed, SectorDevice_sectorOutOfRange,
 	 *         SectorDevice_notWritable
 	 */
-	virtual md_error_t write(const uint8_t* data, sector_t sector) = 0;
+	MFS_NODISCARD virtual md_error_t write(const uint8_t* data, sector_t sector) = 0;
 
 	/** Sector size in bytes. The FAT layer currently requires 512. */
 	virtual uint32_t getBytesPerSector() const = 0;
@@ -48,7 +48,7 @@ public:
 	 * Make sure every completed write is stored on the media (e.g. write back a
 	 * cache). Optional: the default does nothing.
 	 */
-	virtual md_error_t flush() { return 0; }
+	MFS_NODISCARD virtual md_error_t flush() { return 0; }
 };
 
 MFS_NAMESPACE_END
