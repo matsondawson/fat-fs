@@ -29,6 +29,7 @@ typedef enum {
 
 class FatEntryReader;
 class Sector;
+class File;
 
 /**
  * A mounted FAT volume.
@@ -43,6 +44,9 @@ class Sector;
  * it is full fails with Fat_rootDirectoryFull.
  *
  * After construction check mdError (or isMounted()) before using the volume.
+ *
+ * A file can only be open through one File at a time. Destroying the Fat closes
+ * any Files still open on it, so they never write to an unmounted volume.
  */
 class Fat
 {
@@ -74,6 +78,10 @@ private:
 
 	FatFormat_e m_format;
 
+	/** Files open on this volume, linked through File::m_nextOpen. */
+	File *m_openFiles;
+	friend class File;
+
 	/** The root directory's first cluster, or FIXED_ROOT_CLUSTER on FAT12/FAT16. */
 	cluster_t m_rootCluster;
 	/** First sector of the FAT12/FAT16 fixed root directory. */
@@ -92,7 +100,7 @@ private:
 
 public:
 	Fat(SectorDevice &partition);
-	/** Unmount: flushes the device (e.g. a write-back cache). Close Files first. */
+	/** Unmount: closes any Files still open on the volume, then flushes the device. */
 	~Fat();
 	Fat(const Fat&) = delete;
 	Fat& operator=(const Fat&) = delete;

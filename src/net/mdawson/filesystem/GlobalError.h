@@ -99,6 +99,8 @@ enum {
 	/** Tried to open a directory as a file, or create something that exists */
 	File_isDirectory,
 	File_alreadyExists,
+	/** The file is already open through another File object */
+	File_alreadyOpen,
 
 	DirectoryListing_directoryNotFound = 8000,
 	DirectoryListing_invalidPathFormat,

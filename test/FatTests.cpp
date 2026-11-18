@@ -492,24 +492,92 @@ static void test_multiple_open_files() {
 	CHECK(verifyFile(*v.fat, "/", "C.BIN", 2000, 3, 333));
 }
 
-static void test_reader_and_writer_on_same_file() {
+static void test_file_opens_once() {
 	Volume v;
 	CHECK_OK();
 	writeFile(*v.fat, "/", "SHARED.BIN", 1500, 4, 500);
-	File reader(*v.fat, "/", "SHARED.BIN");
-	File writer(*v.fat, "/", "SHARED.BIN");
+	writeFile(*v.fat, "/", "OTHER.BIN", 10, 5, 10);
 	CHECK_OK();
-	uint8_t xs[10];
-	memset(xs, 'X', sizeof(xs));
-	writer.seek(600);
-	writer.write(xs, sizeof(xs)); // overwrite within the existing clusters
+	File first(*v.fat, "/", "SHARED.BIN");
 	CHECK_OK();
-	reader.seek(595);
+	{
+		File second(*v.fat, "/", "shared.bin");
+		CHECK_EQ(mdError, File_alreadyOpen);
+		CHECK(!second.isOpen());
+	}
+	// Asking to create it opens nothing either
+	File created(*v.fat, "/", "SHARED.BIN", true);
+	CHECK_EQ(mdError, File_alreadyOpen);
+	CHECK(!created.isOpen());
+	// The first is untouched by the failed opens
+	CHECK(first.isOpen());
 	uint8_t got[20];
-	CHECK_EQ(reader.read(got, sizeof(got)), 20);
-	CHECK(matchesPattern(got, 5, 595, 4));
-	for (int i = 5; i < 15; i++) CHECK_EQ(got[i], 'X');
-	CHECK(matchesPattern(got + 15, 5, 610, 4));
+	first.seek(595);
+	CHECK_EQ(first.read(got, sizeof(got)), 20);
+	CHECK(matchesPattern(got, 20, 595, 4));
+
+	// Other files open as usual, and closing one in the middle of the list
+	// leaves the others open
+	{
+		File other(*v.fat, "/", "OTHER.BIN");
+		CHECK_OK();
+		File third(*v.fat, "/", "THIRD.BIN", true);
+		CHECK_OK();
+		other.close();
+		CHECK_OK();
+		File again(*v.fat, "/", "OTHER.BIN");
+		CHECK_OK();
+		File thirdAgain(*v.fat, "/", "THIRD.BIN");
+		CHECK_EQ(mdError, File_alreadyOpen);
+		mdError = 0;
+	}
+	mdError = 0;
+	File shared2(*v.fat, "/", "SHARED.BIN");
+	CHECK_EQ(mdError, File_alreadyOpen);
+
+	// Once closed, it opens again
+	first.close();
+	CHECK_OK();
+	File reopened(*v.fat, "/", "SHARED.BIN");
+	CHECK_OK();
+	CHECK_EQ(reopened.length(), 1500);
+}
+
+static void test_removed_file_can_be_created_again() {
+	Volume v;
+	CHECK_OK();
+	File file(*v.fat, "/", "GONE.TXT", true);
+	CHECK_OK();
+	file.write((const uint8_t*)"abc", 3);
+	file.remove();
+	CHECK_OK();
+	CHECK(!file.isOpen());
+	// The new entry may take the freed slot the removed File pointed at
+	File again(*v.fat, "/", "GONE.TXT", true);
+	CHECK_OK();
+	CHECK_EQ(again.length(), 0);
+}
+
+static void test_unmount_closes_open_files() {
+	Volume v;
+	CHECK_OK();
+	File file(*v.fat, "/", "LOG.TXT", true);
+	CHECK_OK();
+	file.write((const uint8_t*)"0123456789", 10);
+	file.seek(10);
+	file.write((const uint8_t*)"abc", 3);
+	CHECK_OK();
+	// Unmounting closes the File, storing its size, and leaves it closed
+	v.remount();
+	CHECK_OK();
+	CHECK(!file.isOpen());
+	file.write((const uint8_t*)"x", 1);
+	CHECK_EQ(mdError, File_notOpen);
+	mdError = 0;
+	File reopened(*v.fat, "/", "LOG.TXT");
+	CHECK_OK();
+	CHECK_EQ(reopened.length(), 13);
+	// file outlives the Fat it was opened on: its destructor must not touch it (ASan checks)
 }
 
 static void test_large_clusters() {
@@ -550,6 +618,12 @@ static void test_remount_persists_everything() {
 	CHECK_EQ(v.fat->countFreeClusters(), freeBefore);
 }
 
+// The size in a file's directory entry on the volume, as another program would see it
+static uint32_t storedSize(Fat &fat, const char *path, const char *name) {
+	DirectoryListing dl(fat, path);
+	return dl.find(name) ? dl.directoryEntry()->DIR_FileSize : 0xFFFFFFFFu;
+}
+
 static void test_flush_persists_size() {
 	Volume v;
 	CHECK_OK();
@@ -558,23 +632,14 @@ static void test_flush_persists_size() {
 	// size at that moment) is stored straight away.
 	file.write((const uint8_t*)"abc", 3);
 	CHECK_OK();
-	{
-		File other(*v.fat, "/", "GROW.TXT");
-		CHECK_EQ(other.length(), 3);
-	}
+	CHECK_EQ(storedSize(*v.fat, "/", "GROW.TXT"), 3);
 	// Later writes only update the size in memory until flush.
 	file.write((const uint8_t*)"def", 3);
 	CHECK_OK();
-	{
-		File other(*v.fat, "/", "GROW.TXT");
-		CHECK_EQ(other.length(), 3);
-	}
+	CHECK_EQ(storedSize(*v.fat, "/", "GROW.TXT"), 3);
 	file.flush();
 	CHECK_OK();
-	{
-		File other(*v.fat, "/", "GROW.TXT");
-		CHECK_EQ(other.length(), 6);
-	}
+	CHECK_EQ(storedSize(*v.fat, "/", "GROW.TXT"), 6);
 	file.write((const uint8_t*)"ghi", 3);
 	file.close();
 	CHECK_OK();
@@ -662,7 +727,9 @@ const TestFramework::TestCase FAT_TESTS[] = {
 	{ "whole_device_without_partition_table", test_whole_device_without_partition_table },
 	{ "device_errors_propagate", test_device_errors_propagate },
 	{ "multiple_open_files", test_multiple_open_files },
-	{ "reader_and_writer_on_same_file", test_reader_and_writer_on_same_file },
+	{ "file_opens_once", test_file_opens_once },
+	{ "removed_file_can_be_created_again", test_removed_file_can_be_created_again },
+	{ "unmount_closes_open_files", test_unmount_closes_open_files },
 	{ "large_clusters", test_large_clusters },
 	{ "remount_persists_everything", test_remount_persists_everything },
 	{ "flush_persists_size", test_flush_persists_size },

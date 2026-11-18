@@ -180,8 +180,13 @@ static_assert(sizeof(DirectoryEntryLong) == 32, "DirectoryEntryLong must be 32 b
 		// File information
 		Chain m_fileChain;
 
+		// Next File open on the same volume (see Fat::m_openFiles)
+		File *m_nextOpen;
+
 		void writeDirectoryEntry();
 		void touch();
+		/** Remove this File from the volume's open files and mark it closed. */
+		void unlinkOpen();
 
 	public:
 		/**
@@ -190,6 +195,9 @@ static_assert(sizeof(DirectoryEntryLong) == 32, "DirectoryEntryLong must be 32 b
 		 * @param path Directory containing the file, e.g. "/" or "/SUB"; mandatory.
 		 * @param name File name, e.g. "TEST.TXT"; mandatory.
 		 * @param create true if file is to be created if not present, else false.
+		 *
+		 * Fails with File_alreadyOpen if another File has the file open, by any of
+		 * its names.
 		 */
 		File(Fat &drive, const char* path, const char *name, bool create = false);
 		/** Closes (and so flushes) the file. */
