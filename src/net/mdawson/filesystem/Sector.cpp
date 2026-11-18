@@ -4,16 +4,18 @@
 
 MFS_NAMESPACE_BEGIN
 
-Sector::Sector(SectorDevice &sectorDevice) {
-	m_sector = (sector_t)-1;
-	m_data = new uint8_t[SECTOR_SIZE];
-
-	m_sectorDevice = &sectorDevice;
+Sector::Sector(SectorDevice &sectorDevice)
+	: m_sector((sector_t)-1), m_sectorDevice(&sectorDevice), m_ownsData(true), m_data(new uint8_t[SECTOR_SIZE]) {
 }
 
+Sector::Sector(SectorDevice &sectorDevice, uint8_t *buffer)
+	: m_sector((sector_t)-1), m_sectorDevice(&sectorDevice), m_ownsData(false), m_data(buffer) {
+}
 
 Sector::~Sector(void) {
-	delete[] m_data;
+	if (m_ownsData) {
+		delete[] m_data;
+	}
 }
 
 void Sector::set(uint32_t offset, uint8_t value) {

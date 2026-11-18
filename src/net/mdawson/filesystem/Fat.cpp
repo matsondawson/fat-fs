@@ -15,7 +15,7 @@ MFS_NAMESPACE_BEGIN
 /** Reads FAT entries through one sector buffer, reading a sector only when it changes. */
 class FatEntryReader {
 public:
-	explicit FatEntryReader(SectorDevice &device) : m_sector(device), m_loaded((sector_t)-1) {}
+	FatEntryReader(SectorDevice &device, uint8_t *buffer) : m_sector(device, buffer), m_loaded((sector_t)-1) {}
 
 	md_error_t load(sector_t sector) {
 		if (sector == m_loaded) return 0;
@@ -34,7 +34,7 @@ private:
 
 Fat::Fat(SectorDevice &partition)
 	: m_partition(&partition), m_infoSector(0), m_mounted(false), m_fsInfoInvalidated(false),
-	  m_openFiles(0), m_rootCluster(0), m_rootSector(0) {
+	  m_buffer(new uint8_t[SECTOR_SIZE]), m_openFiles(0), m_rootCluster(0), m_rootSector(0) {
 	md_error_t error = init();
 	mdError = error;
 	m_mounted = (error == 0);
@@ -51,6 +51,7 @@ Fat::~Fat() {
 		m_partition->flush();
 		mdError = saved;
 	}
+	delete[] m_buffer;
 }
 
 bool Fat::isMounted() const {
@@ -58,7 +59,7 @@ bool Fat::isMounted() const {
 }
 
 md_error_t Fat::init() {
-	Sector sector(*m_partition);
+	Sector sector(*m_partition, m_buffer);
 	if (md_error_t error = sector.read(0)) {
 		return error;
 	}
@@ -409,7 +410,7 @@ cluster_t Fat::getEntry(cluster_t cluster) {
 		return m_endOfChainCluster;
 	}
 
-	FatEntryReader reader(*m_partition);
+	FatEntryReader reader(*m_partition, m_buffer);
 	cluster_t value;
 	if (md_error_t error = readEntry(reader, cluster, &value)) {
 		mdError = error;
@@ -436,7 +437,7 @@ void Fat::setEntry(cluster_t cluster, cluster_t nextCluster) {
 
 	invalidateFsInfo();
 
-	Sector sector(*m_partition);
+	Sector sector(*m_partition, m_buffer);
 #ifdef MFS_FAT12_16
 	if (m_format == Format_FAT16) {
 		sector_t sectorOffset = m_reservedSectors + (cluster >> 8);
@@ -504,7 +505,7 @@ void Fat::invalidateFsInfo() {
 
 	if (m_infoSector == 0 || m_infoSector == 0xFFFF) return;
 
-	Sector sector(*m_partition);
+	Sector sector(*m_partition, m_buffer);
 	if (sector.read(m_infoSector)) return;
 	FSInfo_t *info = (FSInfo_t*)sector.m_data;
 	if (info->FSI_LeadSig != FSI_LEAD_SIG || info->FSI_StrucSig != FSI_STRUC_SIG) return;
@@ -534,7 +535,7 @@ cluster_t Fat::allocateCluster(cluster_t fromCluster) {
 		? m_lastFreeCluster : firstCluster;
 
 	{
-		FatEntryReader reader(*m_partition);
+		FatEntryReader reader(*m_partition, m_buffer);
 		for (uint32_t checked = 0; ; checked++) {
 			if (checked >= m_clusterCount) {
 				mdError = Fat_partitionIsFull;
@@ -554,7 +555,7 @@ cluster_t Fat::allocateCluster(cluster_t fromCluster) {
 	if (mdError) return 0;
 
 	// Zero the cluster so that new directory clusters contain no stale entries.
-	Sector sector(*m_partition);
+	Sector sector(*m_partition, m_buffer);
 	memset(sector.m_data, 0, m_bytesPerSector);
 	sector_t first = clusterToSector(scanCluster);
 	for (uint32_t i = 0; i < m_sectorsPerCluster; i++) {
@@ -590,7 +591,7 @@ void Fat::freeChain(cluster_t cluster) {
 
 uint32_t Fat::countFreeClusters() {
 	uint32_t freeCount = 0;
-	FatEntryReader reader(*m_partition);
+	FatEntryReader reader(*m_partition, m_buffer);
 	for (cluster_t cluster = 2; cluster < m_clusterCount + 2; cluster++) {
 		cluster_t value;
 		if (md_error_t error = readEntry(reader, cluster, &value)) {
@@ -653,22 +654,28 @@ void Fat::write(cluster_t cluster, uint32_t offset, const uint8_t *data, uint32_
 	if (!locate(cluster, offset, dataSize, &sectorNumber)) return;
 	uint32_t sectorOffset = offset % m_bytesPerSector;
 
-	Sector sector(*m_partition);
+	Sector sector(*m_partition, m_buffer);
 	while (dataSize > 0) {
 		uint32_t chunk = m_bytesPerSector - sectorOffset;
 		if (chunk > dataSize) chunk = dataSize;
 
-		// A partial sector write must preserve the rest of the sector.
-		if (chunk != m_bytesPerSector) {
+		if (chunk == m_bytesPerSector) {
+			// A whole sector goes straight from the caller's data
+			if (md_error_t error = m_partition->write(data, sectorNumber)) {
+				mdError = error;
+				return;
+			}
+		} else {
+			// A partial sector write must preserve the rest of the sector.
 			if (md_error_t error = sector.read(sectorNumber)) {
 				mdError = error;
 				return;
 			}
-		}
-		memcpy(sector.m_data + sectorOffset, data, chunk);
-		if (md_error_t error = sector.write(sectorNumber)) {
-			mdError = error;
-			return;
+			memcpy(sector.m_data + sectorOffset, data, chunk);
+			if (md_error_t error = sector.write(sectorNumber)) {
+				mdError = error;
+				return;
+			}
 		}
 
 		data += chunk;
@@ -684,16 +691,24 @@ uint32_t Fat::read(cluster_t cluster, uint32_t offset, uint8_t *data, uint32_t d
 	uint32_t sectorOffset = offset % m_bytesPerSector;
 	uint32_t bytesRead = 0;
 
-	Sector sector(*m_partition);
+	Sector sector(*m_partition, m_buffer);
 	while (dataSize > 0) {
 		uint32_t chunk = m_bytesPerSector - sectorOffset;
 		if (chunk > dataSize) chunk = dataSize;
 
-		if (md_error_t error = sector.read(sectorNumber)) {
-			mdError = error;
-			return bytesRead;
+		if (chunk == m_bytesPerSector) {
+			// A whole sector goes straight into the caller's buffer
+			if (md_error_t error = m_partition->read(data, sectorNumber)) {
+				mdError = error;
+				return bytesRead;
+			}
+		} else {
+			if (md_error_t error = sector.read(sectorNumber)) {
+				mdError = error;
+				return bytesRead;
+			}
+			memcpy(data, sector.m_data + sectorOffset, chunk);
 		}
-		memcpy(data, sector.m_data + sectorOffset, chunk);
 
 		data += chunk;
 		dataSize -= chunk;
