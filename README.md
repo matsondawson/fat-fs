@@ -63,7 +63,7 @@ tests and tools are only built when this repository is the top level project:
 include(FetchContent)
 FetchContent_Declare(fat
   GIT_REPOSITORY https://github.com/matsondawson/fat-fs.git
-  GIT_TAG        v0.1.0)
+  GIT_TAG        v0.1.1)
 set(FAT_LONG_FILE_NAMES ON CACHE BOOL "" FORCE)   # options before MakeAvailable
 FetchContent_MakeAvailable(fat)
 
