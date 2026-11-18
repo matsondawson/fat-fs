@@ -3,6 +3,8 @@
 
 #include "net/mdawson/filesystem/Fat.h"
 
+MFS_NAMESPACE_BEGIN
+
 /**
  * A cursor over a cluster chain (the data of a file or directory).
  *
@@ -75,5 +77,7 @@ public:
 	/** Read at the cursor; stops at the end of the chain. @return bytes read. */
 	uint32_t read(uint8_t *data, uint32_t bytesToRead);
 };
+
+MFS_NAMESPACE_END
 
 #endif

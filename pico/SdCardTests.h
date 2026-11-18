@@ -13,6 +13,6 @@
  *
  * @return number of failed checks; a missing card counts as one.
  */
-int runSdCardTests(PicoSdCard &card, bool write);
+int runSdCardTests(Mfs::PicoSdCard &card, bool write);
 
 #endif

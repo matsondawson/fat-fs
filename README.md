@@ -22,8 +22,10 @@ platform/posix/FileSectorDevice disk image files and block devices on Linux
 platform/pico/PicoSdCard        SD card over SPI on the RP2040 and RP2350
 tools/fatimg.cpp                command line tool for disk images
 test/                           portable test suite + Linux image cross-checks
+test/consumer/                  a project using the library via find_package or source
 pico/                           Raspberry Pi Pico test firmware (pico.sh, Docker)
 cmake/arm-none-eabi.cmake       toolchain file for other Cortex-M targets
+cmake/fatConfig.cmake.in        CMake package for find_package(fat)
 ```
 
 ## Options
@@ -33,6 +35,8 @@ cmake/arm-none-eabi.cmake       toolchain file for other Cortex-M targets
 | `FAT_LONG_FILE_NAMES` | `MFS_LONG_FILE_NAMES` | OFF (ON in `pico/`) | Long file names, UTF-8 API |
 | `FAT_BLOCK_CACHE`     | `MFS_BLOCK_CACHE`     | ON      | `CachedSectorDevice` |
 | `FAT_FAT12_16`        | `MFS_FAT12_16`        | OFF (ON in `pico/`) | FAT12 and FAT16 volumes, and formatting them |
+| `FAT_THREAD_LOCAL_ERROR` | `MFS_THREAD_LOCAL_ERROR` | OFF | `mdError` is `thread_local` (see [Threads](#threads)) |
+| `FAT_INSTALL`         |                       | ON when built on its own | Install rules and the CMake package |
 
 Code size on a Cortex-M0+ (`-Os`), in KB:
 
@@ -43,7 +47,49 @@ Code size on a Cortex-M0+ (`-Os`), in KB:
 | on         | off   | 9.6        | 10.6          |
 | on         | on    | 10.6       | 11.7          |
 
-If you don't use CMake, define the macros yourself.
+If you don't use CMake, define the macros yourself, the same for the library
+and for your code. A mismatch fails to link (with undefined references to
+`Mfs::abi_...` names) rather than running with the wrong class layouts.
+
+## Using it from another project
+
+Everything is in namespace `Mfs`. The CMake target is `fat::fat`; it carries
+the include directory and the `MFS_*` defines it was built with, so your code
+always sees the same options as the library.
+
+From source, with `FetchContent` (or `add_subdirectory()` on a copy). The
+tests and tools are only built when this repository is the top level project:
+
+```cmake
+include(FetchContent)
+FetchContent_Declare(fat
+  GIT_REPOSITORY https://github.com/matsondawson/fat-fs.git
+  GIT_TAG        v0.1.0)
+set(FAT_LONG_FILE_NAMES ON CACHE BOOL "" FORCE)   # options before MakeAvailable
+FetchContent_MakeAvailable(fat)
+
+target_link_libraries(myapp PRIVATE fat::fat)
+```
+
+Or install it and use `find_package`:
+
+```sh
+cmake -S . -B build-lib -DFAT_BUILD_TESTS=OFF -DFAT_BUILD_TOOLS=OFF -DFAT_LONG_FILE_NAMES=ON
+cmake --build build-lib
+cmake --install build-lib --prefix /opt/fat
+```
+
+```cmake
+find_package(fat 0.1 CONFIG REQUIRED)       # with -DCMAKE_PREFIX_PATH=/opt/fat
+target_link_libraries(myapp PRIVATE fat::fat)
+```
+
+This installs `libfat.a`, the headers under `include/net/mdawson/` and
+`lib/cmake/fat/`. Versions with the same major and minor number are compatible.
+`test/consumer/` is a small project built both ways by `scripts/local-tests.sh`.
+
+Other targets: `fat::pico_sd` (pico-sdk projects, see below) and `fat::posix`
+(`FileSectorDevice`, host builds with tests or tools on).
 
 ## Building
 
@@ -56,8 +102,9 @@ ctest --test-dir build --output-on-failure
 ```
 
 The test build covers the option combinations `plain`, `lfn`, `cache`,
-`lfn_cache`, `fat1216` and `lfn_cache_fat1216`, whatever the options above are
-set to:
+`lfn_cache`, `fat1216`, `lfn_cache_fat1216` and `lfn_cache_fat1216_tls` (with a
+thread local `mdError`, plus a test that runs volumes on several threads),
+whatever the options above are set to:
 
 - `unit_<variant>` (`build/fat_tests_<variant> [filter]`): the portable test suite
   on RAM disks, built with AddressSanitizer and UBSan (turn off with
@@ -147,16 +194,16 @@ With a pico-sdk on the host instead, `cmake -S pico -B pico/build/pico` and
 RP2040 or RP2350. The SPI instance and pins are constructor arguments, not
 build settings, so the library is built once for any wiring. Adding this
 repository with `add_subdirectory()` from a pico-sdk project defines the
-`fat_pico_sd` target:
+`fat::pico_sd` target:
 
 ```cpp
 #include "PicoSdCard.h"
 
-PicoSdCard sd(spi1, 10, 11, 12, 13);             // SCK, MOSI, MISO, CS; 25 MHz
+Mfs::PicoSdCard sd(spi1, 10, 11, 12, 13);        // SCK, MOSI, MISO, CS; 25 MHz
 sd.setCardDetect(17);                            // optional, low with a card in
 if (sd.begin()) { printf("%s\n", sd.lastError()); }
-Partition partition(sd, Partition::primary(0));
-Fat fat(partition);
+Mfs::Partition partition(sd, Mfs::Partition::primary(0));
+Mfs::Fat fat(partition);
 ```
 
 `begin()` checks that the pins belong to that SPI instance. The card must be
@@ -173,7 +220,8 @@ cmake --build build-arm
 ```
 
 Or `add_subdirectory()` this repository from your firmware's CMake project and
-link the `fat` target, as `pico/CMakeLists.txt` does.
+link `fat::fat`, as `pico/CMakeLists.txt` does (see
+[Using it from another project](#using-it-from-another-project)).
 
 ## Using it
 
@@ -183,23 +231,23 @@ link the `fat` target, as `pico/CMakeLists.txt` does.
 #include "net/mdawson/filesystem/GlobalError.h"
 #include "net/mdawson/filesystem/Partition.h"
 
-MySdCard sd;                                     // your SectorDevice
-Partition partition(sd, Partition::primary(0));  // or Partition::WHOLE_DEVICE
-Fat fat(partition);
-if (mdError) { /* not FAT32, or no card */ }
+MySdCard sd;                                     // your Mfs::SectorDevice
+Mfs::Partition partition(sd, Mfs::Partition::primary(0));  // or Partition::WHOLE_DEVICE
+Mfs::Fat fat(partition);
+if (Mfs::mdError) { /* not FAT32, or no card */ }
 
 Mfs::File log(fat, "/LOGS", "DATA.CSV", true);   // true = create if missing
 log.seek(log.length());                          // append
 log.write((const uint8_t*)"1,2,3\n", 6);
-if (mdError) { /* handle */ }
+if (Mfs::mdError) { /* handle */ }
 ```
 
 With a block cache (`MFS_BLOCK_CACHE`) in front of the card:
 
 ```cpp
-CachedSectorDevice cache(sd);                        // 4 slots = 2 KB by default
-Partition partition(cache, Partition::primary(0));
-Fat fat(partition);
+Mfs::CachedSectorDevice cache(sd);                   // 4 slots = 2 KB by default
+Mfs::Partition partition(cache, Mfs::Partition::primary(0));
+Mfs::Fat fat(partition);
 ```
 
 `CachedSectorDevice cache(sd, 4, false, true)` also reads ahead: reading sector
@@ -259,7 +307,7 @@ of 2 GB and under as they come, and `getFormat()` says which it is. The API is
 the same for all three. To format one:
 
 ```cpp
-formatFat(sd, sectorCount, Format_FAT16);   // or Format_FAT12, Format_FAT32
+Mfs::formatFat(sd, sectorCount, Mfs::Format_FAT16);   // or Format_FAT12, Format_FAT32
 ```
 
 `formatFat` picks the smallest cluster size that keeps the cluster count within
@@ -268,11 +316,22 @@ the type's limits (FAT12 under 4085, FAT16 4085 to 65524), or fails with
 
 ### Errors and new storage
 
-Errors are reported through the global `mdError` (codes in `GlobalError.h`)
-rather than exceptions, so the code works with `-fno-exceptions`.
+Errors are reported through `Mfs::mdError` (codes in `GlobalError.h`, such as
+`Mfs::File_fileNotFound`) rather than exceptions, so the code works with
+`-fno-exceptions`. Set it to 0 before an operation whose result you check.
 
-To support new storage, implement `SectorDevice`: `read`, `write` and
+To support new storage, implement `Mfs::SectorDevice`: `read`, `write` and
 `getBytesPerSector` (must be 512).
+
+### Threads
+
+The driver has no locks. A volume, and the `File` and `DirectoryListing`
+objects on it, must only be used from one thread at a time.
+
+By default `mdError` is a single variable shared by every thread. With
+`FAT_THREAD_LOCAL_ERROR` it is `thread_local`, so threads that each use their own
+volume (two SD cards, say) see only their own errors. That needs thread local
+storage from your toolchain and RTOS; on bare metal leave it off.
 
 ## Limitations
 
@@ -289,4 +348,4 @@ To support new storage, implement `SectorDevice`: `read`, `write` and
   than kept up to date, as the spec allows. fsck.fat mentions this but doesn't
   treat it as an error.
 - Timestamps default to 1980-01-01. Set `Mfs::getFatTime` to supply real time.
-- Not thread safe; `mdError` is a single global.
+- Not thread safe: see [Threads](#threads).

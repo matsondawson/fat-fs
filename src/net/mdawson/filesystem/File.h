@@ -7,6 +7,8 @@
 #include "net/mdawson/filesystem/Chain.h"
 #include "net/mdawson/filesystem/LongName.h"
 
+MFS_NAMESPACE_BEGIN
+
 #pragma pack(1)
 
 typedef struct // FAT 32 Byte Directory Entry Structure
@@ -121,7 +123,6 @@ typedef struct
 static_assert(sizeof(DirectoryEntry) == 32, "DirectoryEntry must be 32 bytes");
 static_assert(sizeof(DirectoryEntryLong) == 32, "DirectoryEntryLong must be 32 bytes");
 
-namespace Mfs {
 	/**
 	 * Convert a name to the 11 character, space padded, upper case directory form,
 	 * e.g. "test.txt" -> "TEST    TXT". A name that is already 11 characters with
@@ -351,6 +352,7 @@ namespace Mfs {
 	 * Create directory name inside directory path.
 	 */
 	void makeDirectory(Fat &drive, const char *path, const char *name);
-}
+
+MFS_NAMESPACE_END
 
 #endif

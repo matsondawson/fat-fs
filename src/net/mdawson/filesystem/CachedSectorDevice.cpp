@@ -4,6 +4,8 @@
 
 #include <string.h>
 
+MFS_NAMESPACE_BEGIN
+
 static const uint32_t BYTES_PER_SECTOR = 512;
 
 CachedSectorDevice::CachedSectorDevice(SectorDevice &device, uint32_t slots, bool writeThrough, bool readAhead)
@@ -186,5 +188,7 @@ md_error_t CachedSectorDevice::flush() {
 	if (firstError) return firstError;
 	return m_device->flush();
 }
+
+MFS_NAMESPACE_END
 
 #endif // MFS_BLOCK_CACHE

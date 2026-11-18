@@ -2,6 +2,8 @@
 
 #include "net/mdawson/filesystem/GlobalError.h"
 
+MFS_NAMESPACE_BEGIN
+
 Chain::Chain(Fat& fat) : m_fat(&fat) {
 	init(0);
 }
@@ -167,3 +169,5 @@ uint32_t Chain::read(uint8_t* data, uint32_t bytesToRead) {
 	}
 	return bytesRead;
 }
+
+MFS_NAMESPACE_END

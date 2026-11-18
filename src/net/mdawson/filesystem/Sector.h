@@ -3,7 +3,9 @@
 
 #include "net/mdawson/filesystem/SectorDevice.h"
 
-#define SECTOR_SIZE 512
+MFS_NAMESPACE_BEGIN
+
+const int SECTOR_SIZE = 512;
 
 /**
  * A single sector buffer. The buffer is heap allocated (rather than a member array)
@@ -28,5 +30,7 @@ public:
 	md_error_t read(sector_t sector);
 	md_error_t write(sector_t sector);
 };
+
+MFS_NAMESPACE_END
 
 #endif

@@ -11,6 +11,8 @@
 #include <linux/fs.h>
 #endif
 
+MFS_NAMESPACE_BEGIN
+
 static const uint32_t BYTES_PER_SECTOR = 512;
 
 FileSectorDevice::FileSectorDevice(const char *path, bool readOnly)
@@ -93,3 +95,5 @@ md_error_t FileSectorDevice::write(const uint8_t* data, sector_t sector) {
 uint32_t FileSectorDevice::getBytesPerSector() const {
 	return BYTES_PER_SECTOR;
 }
+
+MFS_NAMESPACE_END

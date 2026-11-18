@@ -3,6 +3,8 @@
 
 #include "net/mdawson/common/Types.h"
 
+MFS_NAMESPACE_BEGIN
+
 /**
  * Long file name (VFAT) helpers.
  *
@@ -15,15 +17,14 @@
  */
 
 /** Maximum long name length in UTF-16 code units. */
-#define LFN_MAX_LENGTH 255
+const int LFN_MAX_LENGTH = 255;
 /** Characters stored per long name entry. */
-#define LFN_CHARS_PER_ENTRY 13
+const int LFN_CHARS_PER_ENTRY = 13;
 /** Maximum long name entries for one name: ceil(255 / 13). */
-#define LFN_MAX_ENTRIES 20
+const int LFN_MAX_ENTRIES = 20;
 /** Set on the ordinal of the first physical (last logical) long name entry. */
-#define LFN_LAST_ENTRY 0x40
+const int LFN_LAST_ENTRY = 0x40;
 
-namespace Mfs {
 	namespace Lfn {
 		/** Checksum of an 11 byte short name, stored in each of its long name entries. */
 		uint8_t shortNameChecksum(const uint8_t shortName[11]);
@@ -59,6 +60,7 @@ namespace Mfs {
 		void applyNumericTail(const char basis[11], uint32_t n, char out[11]);
 #endif
 	}
-}
+
+MFS_NAMESPACE_END
 
 #endif

@@ -5,6 +5,8 @@
 #include "hardware/gpio.h"
 #include "pico/time.h"
 
+MFS_NAMESPACE_BEGIN
+
 namespace {
 
 const uint8_t CMD0_GO_IDLE = 0;
@@ -359,3 +361,5 @@ md_error_t PicoSdCard::write(const uint8_t *data, sector_t sector) {
 	m_lastError = "";
 	return 0;
 }
+
+MFS_NAMESPACE_END

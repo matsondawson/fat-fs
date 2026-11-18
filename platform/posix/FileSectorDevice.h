@@ -3,6 +3,8 @@
 
 #include "net/mdawson/filesystem/SectorDevice.h"
 
+MFS_NAMESPACE_BEGIN
+
 /**
  * POSIX sector device backed by a disk image file or a block device
  * (e.g. a USB flash drive at /dev/sdX - make sure it is unmounted first).
@@ -40,5 +42,7 @@ public:
 	virtual md_error_t write(const uint8_t* data, sector_t sector);
 	virtual uint32_t getBytesPerSector() const;
 };
+
+MFS_NAMESPACE_END
 
 #endif

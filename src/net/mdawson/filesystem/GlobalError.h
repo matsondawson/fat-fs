@@ -3,7 +3,21 @@
 
 #include "net/mdawson/common/Types.h"
 
-extern md_error_t mdError;
+MFS_NAMESPACE_BEGIN
+
+/**
+ * Thread local when MFS_THREAD_LOCAL_ERROR is defined (CMake option
+ * FAT_THREAD_LOCAL_ERROR), so threads that each use their own volume see only
+ * their own errors. Objects themselves are still not thread safe: one volume, and
+ * the Files on it, must only be used from one thread at a time.
+ */
+#ifdef MFS_THREAD_LOCAL_ERROR
+#define MFS_ERROR_STORAGE thread_local
+#else
+#define MFS_ERROR_STORAGE
+#endif
+
+extern MFS_ERROR_STORAGE md_error_t mdError;
 
 #define mdRaiseError(_value) mdError=_value;return;
 
@@ -96,5 +110,7 @@ enum {
 	Chain_loopDetected,
 };
 
+
+MFS_NAMESPACE_END
 
 #endif

@@ -6,7 +6,8 @@
 
 #include <string.h>
 
-namespace Mfs {
+MFS_NAMESPACE_BEGIN
+
 
 	static const uint32_t RESERVED_SECTORS = 32;
 	static const uint32_t NUM_FATS = 2;
@@ -264,4 +265,5 @@ namespace Mfs {
 		mdError = format == Format_FAT12 ? Fat_Fat12FormatUnsupported : Fat_Fat16FormatUnsupported;
 #endif
 	}
-}
+
+MFS_NAMESPACE_END

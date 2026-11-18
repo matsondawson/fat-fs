@@ -3,6 +3,8 @@
 
 #include "net/mdawson/filesystem/SectorDevice.h"
 
+using namespace Mfs;
+
 /**
  * Test helper: wraps a device, counts reads/writes/flushes, remembers the order of
  * recent writes, and can inject failures.

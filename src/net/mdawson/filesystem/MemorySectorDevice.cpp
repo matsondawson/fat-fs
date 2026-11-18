@@ -4,6 +4,8 @@
 
 #include <string.h>
 
+MFS_NAMESPACE_BEGIN
+
 static const uint32_t BYTES_PER_SECTOR = 512;
 
 MemorySectorDevice::MemorySectorDevice(sector_t sectorCount, uint32_t maxStoredSectors)
@@ -89,3 +91,5 @@ md_error_t MemorySectorDevice::write(const uint8_t* data, sector_t sector) {
 uint32_t MemorySectorDevice::getBytesPerSector() const {
 	return BYTES_PER_SECTOR;
 }
+
+MFS_NAMESPACE_END

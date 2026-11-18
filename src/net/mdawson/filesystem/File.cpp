@@ -6,7 +6,8 @@
 
 #include <string.h>
 
-namespace Mfs {
+MFS_NAMESPACE_BEGIN
+
 
 	static void defaultFatTime(uint16_t *date, uint16_t *time) {
 		*date = (0 << 9) | (1 << 5) | 1; // 1980-01-01
@@ -788,4 +789,5 @@ namespace Mfs {
 			mdError = error;
 		}
 	}
-}
+
+MFS_NAMESPACE_END
