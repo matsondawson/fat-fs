@@ -26,26 +26,28 @@
 #else
 #define MFS_ABI_FAT12_16
 #endif
-#ifdef MFS_THREAD_LOCAL_ERROR
-#define MFS_ABI_THREAD_LOCAL _tls
-#else
-#define MFS_ABI_THREAD_LOCAL
-#endif
 
-#define MFS_ABI_JOIN2(a, b, c, d, e) a##b##c##d##e
-#define MFS_ABI_JOIN(a, b, c, d, e) MFS_ABI_JOIN2(a, b, c, d, e)
-#define MFS_ABI_NAMESPACE MFS_ABI_JOIN(abi, MFS_ABI_LFN, MFS_ABI_CACHE, MFS_ABI_FAT12_16, MFS_ABI_THREAD_LOCAL)
+#define MFS_ABI_JOIN2(a, b, c, d) a##b##c##d
+#define MFS_ABI_JOIN(a, b, c, d) MFS_ABI_JOIN2(a, b, c, d)
+#define MFS_ABI_NAMESPACE MFS_ABI_JOIN(abi, MFS_ABI_LFN, MFS_ABI_CACHE, MFS_ABI_FAT12_16)
 
 #define MFS_NAMESPACE_BEGIN namespace Mfs { inline namespace MFS_ABI_NAMESPACE {
 #define MFS_NAMESPACE_END } }
 
+// On-disk structures are declared as packed structs and copied to and from
+// sector buffers, which is only right on a little-endian CPU (x86, ARM Cortex-M).
+#if defined(__BYTE_ORDER__) && defined(__ORDER_LITTLE_ENDIAN__) && __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__
+#error "The FAT driver needs a little-endian CPU"
+#endif
+
 MFS_NAMESPACE_BEGIN
 
 /**
- * Error code returned by driver functions; 0 means success.
- * (Named md_error_t rather than error_t to avoid clashing with glibc's error_t.)
+ * Error code returned by driver functions; 0 means success. The codes are in
+ * Error.h. (Named md_error_t rather than error_t to avoid clashing with glibc's
+ * error_t.)
  */
-typedef uint32_t md_error_t;
+using md_error_t = uint32_t;
 
 MFS_NAMESPACE_END
 

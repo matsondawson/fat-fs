@@ -1,6 +1,6 @@
 #include "File.h"
 
-#include "net/mdawson/filesystem/GlobalError.h"
+#include "net/mdawson/filesystem/Error.h"
 #include "net/mdawson/filesystem/Chain.h"
 #include "net/mdawson/filesystem/LongName.h"
 
@@ -26,15 +26,15 @@ MFS_NAMESPACE_BEGIN
 
 	static bool isValidChar(const char ch) {
 		// Bytes >= 128 are allowed by the specification (OEM code page characters).
-		return (unsigned char)ch > ' ' && ch != 127 && strchr(fatShortFilenameInvalidChars, ch) == 0;
+		return static_cast<unsigned char>(ch) > ' ' && ch != 127 && strchr(fatShortFilenameInvalidChars, ch) == nullptr;
 	}
 
 	static char toUpper(char ch) {
-		return (ch >= 'a' && ch <= 'z') ? (char)(ch - 'a' + 'A') : ch;
+		return (ch >= 'a' && ch <= 'z') ? static_cast<char>(ch - 'a' + 'A') : ch;
 	}
 
 	static char toLower(char ch) {
-		return (ch >= 'A' && ch <= 'Z') ? (char)(ch - 'A' + 'a') : ch;
+		return (ch >= 'A' && ch <= 'Z') ? static_cast<char>(ch - 'A' + 'a') : ch;
 	}
 
 	bool toShortName(const char *name, uint32_t length, char out[11]) {
@@ -51,7 +51,7 @@ MFS_NAMESPACE_BEGIN
 
 		// Already in 11 character directory form? (Upper case only, so that an 11
 		// character long name such as "My Document" is not mistaken for one.)
-		if (length == 11 && memchr(name, '.', 11) == 0) {
+		if (length == 11 && memchr(name, '.', 11) == nullptr) {
 			bool raw = name[0] != ' ';
 			for (int i = 0; i < 11 && raw; i++) {
 				char ch = name[i];
@@ -79,7 +79,7 @@ MFS_NAMESPACE_BEGIN
 			}
 		}
 		// A leading 0xE5 is stored as 0x05.
-		if ((unsigned char)out[0] == DIR_ENTRY_DELETED) out[0] = 0x05;
+		if (static_cast<uint8_t>(out[0]) == DIR_ENTRY_DELETED) out[0] = 0x05;
 		return true;
 	}
 
@@ -91,14 +91,14 @@ MFS_NAMESPACE_BEGIN
 		if (size == 0) return 0;
 		uint32_t o = 0;
 		for (int i = 0; i < 8 && shortName[i] != ' ' && o + 1 < size; i++) {
-			char ch = (char)shortName[i];
-			if (i == 0 && shortName[0] == 0x05) ch = (char)DIR_ENTRY_DELETED;
+			char ch = static_cast<char>(shortName[i]);
+			if (i == 0 && shortName[0] == 0x05) ch = static_cast<char>(DIR_ENTRY_DELETED);
 			out[o++] = (ntRes & NTRES_LOWER_BASE) ? toLower(ch) : ch;
 		}
 		if (shortName[8] != ' ' && o + 1 < size) {
 			out[o++] = '.';
 			for (int i = 8; i < 11 && shortName[i] != ' ' && o + 1 < size; i++) {
-				char ch = (char)shortName[i];
+				char ch = static_cast<char>(shortName[i]);
 				out[o++] = (ntRes & NTRES_LOWER_EXT) ? toLower(ch) : ch;
 			}
 		}
@@ -107,12 +107,12 @@ MFS_NAMESPACE_BEGIN
 	}
 
 	static cluster_t entryFirstCluster(const DirectoryEntry &entry) {
-		return ((uint32_t)entry.DIR_FstClusHI << 16) | entry.DIR_FstClusLO;
+		return (static_cast<uint32_t>(entry.DIR_FstClusHI) << 16) | entry.DIR_FstClusLO;
 	}
 
 	static void setEntryFirstCluster(DirectoryEntry &entry, cluster_t cluster) {
-		entry.DIR_FstClusHI = (uint16_t)(cluster >> 16);
-		entry.DIR_FstClusLO = (uint16_t)(cluster & 0xFFFF);
+		entry.DIR_FstClusHI = static_cast<uint16_t>(cluster >> 16);
+		entry.DIR_FstClusLO = static_cast<uint16_t>(cluster & 0xFFFF);
 	}
 
 	static void initEntry(DirectoryEntry &entry, const char name[11], uint8_t attr) {
@@ -133,71 +133,64 @@ MFS_NAMESPACE_BEGIN
 	 * Mark count consecutive directory entries starting at (cluster, offset) deleted.
 	 * The entries may continue into following clusters of the directory.
 	 */
-	static void markEntriesDeleted(Fat &fat, cluster_t cluster, uint32_t offset, uint32_t count) {
+	static md_error_t markEntriesDeleted(Fat &fat, cluster_t cluster, uint32_t offset, uint32_t count) {
 		const uint8_t deleted = DIR_ENTRY_DELETED;
 		for (uint32_t i = 0; i < count; i++) {
 			if (offset >= fat.getClusterBytes(cluster)) {
-				cluster = fat.getEntry(cluster);
-				if (mdError || fat.isEndOfClusterChain(cluster)) return;
+				cluster_t next;
+				if (md_error_t error = fat.getEntry(cluster, next)) return error;
+				if (fat.isEndOfClusterChain(next)) return 0;
+				cluster = next;
 				offset = 0;
 			}
-			fat.write(cluster, offset, &deleted, 1);
-			if (mdError) return;
+			if (md_error_t error = fat.write(cluster, offset, &deleted, 1)) return error;
 			offset += sizeof(DirectoryEntry);
 		}
+		return 0;
 	}
 
 	/******************************** File ********************************/
 
-	File::File(Fat& drive, const char* path, const char* name, bool create)
+	File::File(Fat &drive)
 		: m_drive(&drive), m_open(false), m_entryDirty(false), m_entryCluster(0), m_entryClusterOffset(0),
-		  m_longNameCluster(0), m_longNameOffset(0), m_longNameEntries(0), m_fileChain(drive), m_nextOpen(0) {
-		mdError = 0;
-		memset(&m_directoryEntry, 0, sizeof(m_directoryEntry));
+		  m_directoryEntry(), m_longNameCluster(0), m_longNameOffset(0), m_longNameEntries(0), m_fileChain(drive),
+		  m_nextOpen(nullptr) {
+	}
 
-		if (!drive.isMounted()) {
-			mdError = Fat_notMounted;
-			return;
-		}
+	md_error_t File::open(const char *path, const char *name, bool create) {
+		if (m_open) return File_alreadyOpen;
+		if (!m_drive->isMounted()) return Fat_notMounted;
 
 		// **** Find directory entry ****
-		DirectoryListing dl(drive, path);
-		if (mdError) return;
+		DirectoryListing dl(*m_drive);
+		if (md_error_t error = dl.open(path)) return error;
 
 		if (dl.find(name)) {
-			if (dl.directoryEntry()->DIR_Attr & ATTR_DIRECTORY) {
-				mdError = File_isDirectory;
-				return;
-			}
+			if (dl.directoryEntry().DIR_Attr & ATTR_DIRECTORY) return File_isDirectory;
 			// A file is known by where its entry is, whichever name opened it
-			for (File *open = drive.m_openFiles; open; open = open->m_nextOpen) {
+			for (File *open = m_drive->m_openFiles; open; open = open->m_nextOpen) {
 				if (open->m_entryCluster == dl.cluster() && open->m_entryClusterOffset == dl.clusterOffset()) {
-					mdError = File_alreadyOpen;
-					return;
+					return File_alreadyOpen;
 				}
 			}
 		} else {
-			if (mdError) return;
-			if (!create) {
-				mdError = File_fileNotFound;
-				return;
-			}
-
-			// else create the file...
-			dl.createEntry(name, ATTR_ARCHIVE, 0);
-			if (mdError) return;
+			if (md_error_t error = dl.error()) return error;
+			if (!create) return File_fileNotFound;
+			if (md_error_t error = dl.createEntry(name, ATTR_ARCHIVE, 0)) return error;
 		}
 
+		m_entryDirty = false;
 		m_entryCluster = dl.cluster();
 		m_entryClusterOffset = dl.clusterOffset();
-		m_directoryEntry = *dl.directoryEntry();
+		m_directoryEntry = dl.directoryEntry();
 		m_longNameCluster = dl.longNameCluster();
 		m_longNameOffset = dl.longNameClusterOffset();
 		m_longNameEntries = dl.longNameEntryCount();
 		m_fileChain.init(entryFirstCluster(m_directoryEntry));
 		m_open = true;
-		m_nextOpen = drive.m_openFiles;
-		drive.m_openFiles = this;
+		m_nextOpen = m_drive->m_openFiles;
+		m_drive->m_openFiles = this;
+		return 0;
 	}
 
 	void File::unlinkOpen() {
@@ -207,15 +200,13 @@ MFS_NAMESPACE_BEGIN
 				break;
 			}
 		}
-		m_nextOpen = 0;
+		m_nextOpen = nullptr;
 		m_open = false;
 	}
 
 	File::~File() {
 		if (m_open) {
-			md_error_t saved = mdError;
 			close();
-			if (!mdError) mdError = saved;
 		}
 	}
 
@@ -231,9 +222,13 @@ MFS_NAMESPACE_BEGIN
 		return m_fileChain.position();
 	}
 
-	void File::writeDirectoryEntry() {
-		m_drive->write(m_entryCluster, m_entryClusterOffset, (const uint8_t*)&m_directoryEntry, sizeof(DirectoryEntry));
-		if (!mdError) m_entryDirty = false;
+	md_error_t File::writeDirectoryEntry() {
+		if (md_error_t error = m_drive->write(m_entryCluster, m_entryClusterOffset,
+		                                      reinterpret_cast<const uint8_t*>(&m_directoryEntry), sizeof(DirectoryEntry))) {
+			return error;
+		}
+		m_entryDirty = false;
+		return 0;
 	}
 
 	void File::touch() {
@@ -246,82 +241,55 @@ MFS_NAMESPACE_BEGIN
 		m_entryDirty = true;
 	}
 
-	void File::seek(uint32_t position) {
-		mdError = 0;
-		if (!m_open) {
-			mdError = File_notOpen;
-			return;
-		}
-		if (position > length()) {
-			mdError = File_seekExceedsFileSize;
-			return;
-		}
-		m_fileChain.seek(position);
+	md_error_t File::seek(uint32_t position) {
+		if (!m_open) return File_notOpen;
+		if (position > length()) return File_seekExceedsFileSize;
+		return m_fileChain.seek(position);
 	}
 
-	void File::truncate() {
-		mdError = 0;
-		if (!m_open) {
-			mdError = File_notOpen;
-			return;
-		}
-		m_fileChain.truncate();
-		if (mdError) return;
+	md_error_t File::truncate() {
+		if (!m_open) return File_notOpen;
+		if (md_error_t error = m_fileChain.truncate()) return error;
 		m_directoryEntry.DIR_FileSize = position();
 		setEntryFirstCluster(m_directoryEntry, m_fileChain.firstCluster());
 		touch();
 		// Freed clusters must not stay referenced by the entry: store it now.
-		writeDirectoryEntry();
+		return writeDirectoryEntry();
 	}
 
-	void File::flush() {
-		mdError = 0;
-		if (!m_open) {
-			mdError = File_notOpen;
-			return;
-		}
+	md_error_t File::flush() {
+		if (!m_open) return File_notOpen;
 		if (m_entryDirty) {
-			writeDirectoryEntry();
-			if (mdError) return;
+			if (md_error_t error = writeDirectoryEntry()) return error;
 		}
-		m_drive->flush();
+		return m_drive->flush();
 	}
 
-	void File::close() {
-		if (!m_open) {
-			mdError = File_notOpen;
-			return;
-		}
-		flush();
+	md_error_t File::close() {
+		if (!m_open) return File_notOpen;
+		md_error_t error = flush();
 		unlinkOpen();
+		return error;
 	}
 
-	void File::remove() {
-		mdError = 0;
-		if (!m_open) {
-			mdError = File_notOpen;
-			return;
+	md_error_t File::remove() {
+		if (!m_open) return File_notOpen;
+		if (md_error_t error = m_fileChain.freeAll()) return error;
+		if (md_error_t error = markEntriesDeleted(*m_drive, m_longNameCluster, m_longNameOffset, m_longNameEntries)) {
+			return error;
 		}
-		m_fileChain.freeAll();
-		if (mdError) return;
-		markEntriesDeleted(*m_drive, m_longNameCluster, m_longNameOffset, m_longNameEntries);
-		if (mdError) return;
 		m_directoryEntry.DIR_Name[0] = DIR_ENTRY_DELETED;
-		writeDirectoryEntry();
+		md_error_t error = writeDirectoryEntry();
 		unlinkOpen();
+		return error;
 	}
 
-	void File::write(const uint8_t* data, uint32_t bytesToWrite) {
-		mdError = 0;
-		if (!m_open) {
-			mdError = File_notOpen;
-			return;
-		}
-		if (bytesToWrite == 0) return;
+	md_error_t File::write(const uint8_t *data, uint32_t bytesToWrite) {
+		if (!m_open) return File_notOpen;
+		if (bytesToWrite == 0) return 0;
 
 		cluster_t firstCluster = m_fileChain.firstCluster();
-		m_fileChain.write(data, bytesToWrite);
-		md_error_t writeError = mdError;
+		md_error_t error = m_fileChain.write(data, bytesToWrite);
 
 		// Record whatever was written, even if the write stopped part way (e.g. disk full).
 		if (position() > m_directoryEntry.DIR_FileSize) {
@@ -332,42 +300,39 @@ MFS_NAMESPACE_BEGIN
 			// The file just got its first cluster. Store the entry straight away so the
 			// new chain is never left unreferenced.
 			setEntryFirstCluster(m_directoryEntry, m_fileChain.firstCluster());
-			mdError = 0;
-			writeDirectoryEntry();
+			md_error_t entryError = writeDirectoryEntry();
+			if (!error) error = entryError;
 		}
-		if (writeError) mdError = writeError;
+		return error;
 	}
 
-	uint32_t File::read(uint8_t* data, uint32_t bytesToRead) {
-		mdError = 0;
-		if (!m_open) {
-			mdError = File_notOpen;
-			return 0;
-		}
+	md_error_t File::read(uint8_t *data, uint32_t bytesToRead, uint32_t &bytesRead) {
+		bytesRead = 0;
+		if (!m_open) return File_notOpen;
 		uint32_t remaining = length() - position();
 		if (bytesToRead > remaining) bytesToRead = remaining;
-		return m_fileChain.read(data, bytesToRead);
+		return m_fileChain.read(data, bytesToRead, bytesRead);
 	}
 
 	/***************************** DirectoryListing *****************************/
 
-	DirectoryListing::DirectoryListing(Fat& drive, const char* path)
-		: m_drive(&drive), m_directoryChain(drive), m_entryCluster(0), m_entryClusterOffset(0), m_atEnd(false),
-		  m_longNameCluster(0), m_longNameOffset(0), m_longNameEntries(0), m_runTotal(0), m_runNext(0), m_runChecksum(0) {
-		mdError = 0;
-		memset(&m_directoryEntry, 0, sizeof(m_directoryEntry));
+	DirectoryListing::DirectoryListing(Fat &drive)
+		: m_drive(&drive), m_directoryChain(drive), m_startCluster(0), m_entryCluster(0), m_entryClusterOffset(0),
+		  m_open(false), m_atEnd(false), m_error(0), m_directoryEntry(), m_longNameCluster(0), m_longNameOffset(0),
+		  m_longNameEntries(0), m_runTotal(0), m_runNext(0), m_runChecksum(0)
 #ifdef MFS_LONG_FILE_NAMES
-		m_longName = new uint16_t[LFN_MAX_ENTRIES * LFN_CHARS_PER_ENTRY];
-		m_longNameLength = 0;
+		  , m_longName(new uint16_t[LFN_MAX_ENTRIES * LFN_CHARS_PER_ENTRY]), m_longNameLength(0)
 #endif
+	{
+	}
 
-		if (!drive.isMounted()) {
-			mdError = Fat_notMounted;
-			m_startCluster = 0;
-			return;
-		}
+	md_error_t DirectoryListing::open(const char *path) {
+		m_open = false;
+		m_error = 0;
+		if (!m_drive->isMounted()) return Fat_notMounted;
 
-		m_startCluster = drive.getRootDirectoryCluster();
+		m_startCluster = m_drive->getRootDirectoryCluster();
+		m_open = true;
 		reset();
 
 		const char *p = path;
@@ -376,31 +341,30 @@ MFS_NAMESPACE_BEGIN
 			const char *end = p;
 			while (*end && *end != '/') end++;
 
-			bool found = find(p, (uint32_t)(end - p));
-			if (mdError == File_invalidName) {
-				mdError = DirectoryListing_invalidPathFormat;
-				return;
+			bool found = find(p, static_cast<uint32_t>(end - p));
+			md_error_t error = m_error;
+			if (error == File_invalidName) error = DirectoryListing_invalidPathFormat;
+			if (!error && (!found || !(m_directoryEntry.DIR_Attr & ATTR_DIRECTORY))) {
+				error = DirectoryListing_directoryNotFound;
 			}
-			if (mdError) return;
-			if (!found || !(m_directoryEntry.DIR_Attr & ATTR_DIRECTORY)) {
-				mdError = DirectoryListing_directoryNotFound;
-				return;
+			if (error) {
+				m_open = false;
+				return error;
 			}
 
 			// ".." entries pointing at the root directory use cluster 0.
 			cluster_t cluster = entryFirstCluster(m_directoryEntry);
-			m_startCluster = cluster ? cluster : drive.getRootDirectoryCluster();
+			m_startCluster = cluster ? cluster : m_drive->getRootDirectoryCluster();
 			reset();
 
 			p = end;
 			while (*p == '/') p++;
 		}
+		return 0;
 	}
 
-	DirectoryListing::~DirectoryListing() {
-#ifdef MFS_LONG_FILE_NAMES
-		delete[] m_longName;
-#endif
+	md_error_t DirectoryListing::error() const {
+		return m_error;
 	}
 
 	void DirectoryListing::reset() {
@@ -421,7 +385,7 @@ MFS_NAMESPACE_BEGIN
 
 #ifdef MFS_LONG_FILE_NAMES
 	void DirectoryListing::readLongNameChars(const DirectoryEntryLong &entry, uint32_t index) {
-		uint16_t *out = m_longName + index * LFN_CHARS_PER_ENTRY;
+		uint16_t *out = m_longName.get() + index * LFN_CHARS_PER_ENTRY;
 		// Fields are packed and may be unaligned: copy them byte wise.
 		memcpy(out, entry.LDIR_Name1, sizeof(entry.LDIR_Name1));
 		memcpy(out + 5, entry.LDIR_Name2, sizeof(entry.LDIR_Name2));
@@ -430,11 +394,17 @@ MFS_NAMESPACE_BEGIN
 #endif
 
 	bool DirectoryListing::next(bool findEmpty) {
+		if (!m_open) {
+			m_error = DirectoryListing_notOpen;
+			return false;
+		}
+		m_error = 0;
 		if (m_atEnd && !findEmpty) return false;
 
 		for (;;) {
-			uint32_t bytesRead = m_directoryChain.read((uint8_t*)&m_directoryEntry, sizeof(DirectoryEntry));
-			if (mdError || bytesRead != sizeof(DirectoryEntry)) {
+			uint32_t bytesRead;
+			m_error = m_directoryChain.read(reinterpret_cast<uint8_t*>(&m_directoryEntry), sizeof(DirectoryEntry), bytesRead);
+			if (m_error || bytesRead != sizeof(DirectoryEntry)) {
 				return false;
 			}
 			// Entries never straddle clusters, so the entry is just behind the cursor.
@@ -457,7 +427,8 @@ MFS_NAMESPACE_BEGIN
 			if (findEmpty) continue;
 
 			if (isLongNameEntry(m_directoryEntry)) {
-				const DirectoryEntryLong &entry = *(const DirectoryEntryLong*)&m_directoryEntry;
+				DirectoryEntryLong entry;
+				memcpy(&entry, &m_directoryEntry, sizeof(entry));
 				uint8_t ordinal = entry.LDIR_Ord & 0x1F;
 				if (entry.LDIR_Ord & LFN_LAST_ENTRY) {
 					// First physical entry of a run.
@@ -493,7 +464,7 @@ MFS_NAMESPACE_BEGIN
 			    Lfn::shortNameChecksum(m_directoryEntry.DIR_Name) == m_runChecksum) {
 				m_longNameEntries = m_runTotal;
 #ifdef MFS_LONG_FILE_NAMES
-				uint32_t maxLength = (uint32_t)m_runTotal * LFN_CHARS_PER_ENTRY;
+				uint32_t maxLength = static_cast<uint32_t>(m_runTotal) * LFN_CHARS_PER_ENTRY;
 				m_longNameLength = 0;
 				while (m_longNameLength < maxLength && m_longName[m_longNameLength] != 0) m_longNameLength++;
 				if (m_longNameLength == 0 || m_longNameLength > LFN_MAX_LENGTH) m_longNameEntries = 0;
@@ -524,10 +495,10 @@ MFS_NAMESPACE_BEGIN
 		return m_longNameOffset;
 	}
 
-	uint32_t DirectoryListing::name(char *out, uint32_t size) {
+	uint32_t DirectoryListing::name(char *out, uint32_t size) const {
 #ifdef MFS_LONG_FILE_NAMES
 		if (m_longNameEntries) {
-			return Lfn::toUtf8(m_longName, m_longNameLength, out, size);
+			return Lfn::toUtf8(m_longName.get(), m_longNameLength, out, size);
 		}
 #endif
 		return formatShortName(m_directoryEntry.DIR_Name, m_directoryEntry.DIR_NTRes, out, size);
@@ -538,32 +509,33 @@ MFS_NAMESPACE_BEGIN
 	}
 
 	bool DirectoryListing::find(const char *name, uint32_t length) {
+		if (!m_open) {
+			m_error = DirectoryListing_notOpen;
+			return false;
+		}
+		m_error = 0;
 		char shortName[11];
 		bool isShortName = toShortName(name, length, shortName);
 
 #ifdef MFS_LONG_FILE_NAMES
-		uint16_t *wanted = new uint16_t[LFN_MAX_LENGTH];
-		int32_t wantedLength = Lfn::fromUtf8(name, length, wanted);
+		std::unique_ptr<uint16_t[]> wanted(new uint16_t[LFN_MAX_LENGTH]);
+		int32_t wantedLength = Lfn::fromUtf8(name, length, wanted.get());
 		if (!isShortName && wantedLength <= 0) {
-			delete[] wanted;
-			mdError = File_invalidName;
+			m_error = File_invalidName;
 			return false;
 		}
 		reset();
-		bool found = false;
 		while (next()) {
-			if (isShortName && memcmp(m_directoryEntry.DIR_Name, shortName, 11) == 0) { found = true; break; }
+			if (isShortName && memcmp(m_directoryEntry.DIR_Name, shortName, 11) == 0) return true;
 			if (wantedLength > 0 && m_longNameEntries &&
-			    Lfn::equalsIgnoreCase(m_longName, m_longNameLength, wanted, (uint32_t)wantedLength)) {
-				found = true;
-				break;
+			    Lfn::equalsIgnoreCase(m_longName.get(), m_longNameLength, wanted.get(), static_cast<uint32_t>(wantedLength))) {
+				return true;
 			}
 		}
-		delete[] wanted;
-		return found;
+		return false;
 #else
 		if (!isShortName) {
-			mdError = File_invalidName;
+			m_error = File_invalidName;
 			return false;
 		}
 		return findShortName(shortName);
@@ -580,20 +552,20 @@ MFS_NAMESPACE_BEGIN
 		return false;
 	}
 
-	DirectoryEntry* DirectoryListing::directoryEntry() {
-		return &m_directoryEntry;
+	const DirectoryEntry &DirectoryListing::directoryEntry() const {
+		return m_directoryEntry;
 	}
 
-	cluster_t DirectoryListing::cluster() {
+	cluster_t DirectoryListing::cluster() const {
 		return m_entryCluster;
 	}
 
-	uint32_t DirectoryListing::clusterOffset() {
+	uint32_t DirectoryListing::clusterOffset() const {
 		return m_entryClusterOffset;
 	}
 
-	void DirectoryListing::writeEntries(const DirectoryEntry *entries, uint32_t count) {
-		mdError = 0;
+	md_error_t DirectoryListing::writeEntries(const DirectoryEntry *entries, uint32_t count) {
+		if (!m_open) return DirectoryListing_notOpen;
 
 		// Find count consecutive free slots (they may span clusters).
 		reset();
@@ -602,8 +574,10 @@ MFS_NAMESPACE_BEGIN
 		cluster_t lastCluster = m_startCluster;
 		DirectoryEntry entry;
 		for (;;) {
-			uint32_t n = m_directoryChain.read((uint8_t*)&entry, sizeof(entry));
-			if (mdError) return;
+			uint32_t n;
+			if (md_error_t error = m_directoryChain.read(reinterpret_cast<uint8_t*>(&entry), sizeof(entry), n)) {
+				return error;
+			}
 			if (n != sizeof(entry)) break; // end of the directory's chain
 			lastCluster = m_directoryChain.getCluster();
 			uint8_t first = entry.DIR_Name[0];
@@ -640,11 +614,11 @@ MFS_NAMESPACE_BEGIN
 			for (uint32_t i = 0; i < count; i++) {
 				if (offset >= m_drive->getClusterBytes(cluster)) {
 					// A full FAT12/16 root directory fails here, with Fat_rootDirectoryFull
-					cluster_t next = m_drive->getEntry(cluster);
-					if (mdError) return;
+					cluster_t next;
+					if (md_error_t error = m_drive->getEntry(cluster, next)) return error;
 					if (m_drive->isEndOfClusterChain(next)) {
-						next = m_drive->allocateCluster(cluster); // zeroed, so it reads as free
-						if (mdError) return;
+						// zeroed, so it reads as free
+						if (md_error_t error = m_drive->allocateCluster(cluster, next)) return error;
 					}
 					cluster = next;
 					offset = 0;
@@ -654,8 +628,10 @@ MFS_NAMESPACE_BEGIN
 						m_longNameCluster = cluster;
 						m_longNameOffset = offset;
 					}
-					m_drive->write(cluster, offset, (const uint8_t*)&entries[i], sizeof(DirectoryEntry));
-					if (mdError) return;
+					if (md_error_t error = m_drive->write(cluster, offset, reinterpret_cast<const uint8_t*>(&entries[i]),
+					                                      sizeof(DirectoryEntry))) {
+						return error;
+					}
 					m_entryCluster = cluster;
 					m_entryClusterOffset = offset;
 				}
@@ -664,33 +640,34 @@ MFS_NAMESPACE_BEGIN
 		}
 
 		m_directoryEntry = entries[count - 1];
-		m_longNameEntries = (uint8_t)(count - 1);
 		// The chain cursor is no longer meaningful: the next next() starts over.
 		reset();
-		m_longNameEntries = (uint8_t)(count - 1);
+		m_longNameEntries = static_cast<uint8_t>(count - 1);
+		return 0;
 	}
 
-	void DirectoryListing::addEntry(const DirectoryEntry &entry) {
-		writeEntries(&entry, 1);
+	md_error_t DirectoryListing::addEntry(const DirectoryEntry &entry) {
+		return writeEntries(&entry, 1);
 	}
 
-	void DirectoryListing::addFileEntry(const char* name) {
+	md_error_t DirectoryListing::addFileEntry(const char *name) {
 		DirectoryEntry entry;
 		initEntry(entry, name, ATTR_ARCHIVE);
-		addEntry(entry);
+		return addEntry(entry);
 	}
 
 	/** True if name is plain ASCII with no lower case, i.e. exactly representable as 8.3. */
 	static bool isPlainShortName(const char *name, uint32_t length) {
 		for (uint32_t i = 0; i < length; i++) {
-			unsigned char ch = (unsigned char)name[i];
+			unsigned char ch = static_cast<unsigned char>(name[i]);
 			if (ch >= 0x80 || (ch >= 'a' && ch <= 'z')) return false;
 		}
 		return true;
 	}
 
-	void DirectoryListing::createEntry(const char *name, uint8_t attr, cluster_t firstCluster) {
-		mdError = 0;
+	md_error_t DirectoryListing::createEntry(const char *name, uint8_t attr, cluster_t firstCluster) {
+		if (!m_open) return DirectoryListing_notOpen;
+		m_error = 0;
 		uint32_t length = strlen(name);
 
 		char shortName[11];
@@ -698,97 +675,81 @@ MFS_NAMESPACE_BEGIN
 
 #ifdef MFS_LONG_FILE_NAMES
 		if (!isShortName || !isPlainShortName(name, length)) {
-			uint16_t *longName = new uint16_t[LFN_MAX_LENGTH];
-			int32_t longLength = Lfn::fromUtf8(name, length, longName);
+			std::unique_ptr<uint16_t[]> longName(new uint16_t[LFN_MAX_LENGTH]);
+			int32_t longLength = Lfn::fromUtf8(name, length, longName.get());
 			if (longLength <= 0 || (longLength <= 2 && longName[0] == '.' && longName[longLength - 1] == '.')) {
-				delete[] longName;
-				mdError = File_invalidName;
-				return;
+				return File_invalidName;
 			}
 
 			// Choose a unique short alias.
 			char basis[11];
 			bool lossy;
-			Lfn::makeBasisName(longName, (uint32_t)longLength, basis, &lossy);
+			Lfn::makeBasisName(longName.get(), static_cast<uint32_t>(longLength), basis, lossy);
 			bool unique = false;
 			if (!lossy) {
 				memcpy(shortName, basis, 11);
 				unique = !findShortName(shortName);
 			}
-			for (uint32_t n = 1; !unique && !mdError && n <= 999999; n++) {
+			for (uint32_t n = 1; !unique && !m_error && n <= 999999; n++) {
 				Lfn::applyNumericTail(basis, n, shortName);
 				unique = !findShortName(shortName);
 			}
-			if (mdError || !unique) {
-				delete[] longName;
-				if (!mdError) mdError = File_alreadyExists;
-				return;
-			}
+			if (m_error) return m_error;
+			if (!unique) return File_alreadyExists;
 
 			// Long name entries (last part first) followed by the short entry.
-			uint32_t longEntries = ((uint32_t)longLength + LFN_CHARS_PER_ENTRY - 1) / LFN_CHARS_PER_ENTRY;
-			DirectoryEntry *entries = new DirectoryEntry[longEntries + 1];
-			uint8_t checksum = Lfn::shortNameChecksum((const uint8_t*)shortName);
+			uint32_t longEntries = (static_cast<uint32_t>(longLength) + LFN_CHARS_PER_ENTRY - 1) / LFN_CHARS_PER_ENTRY;
+			std::unique_ptr<DirectoryEntry[]> entries(new DirectoryEntry[longEntries + 1]);
+			uint8_t checksum = Lfn::shortNameChecksum(reinterpret_cast<const uint8_t*>(shortName));
 			for (uint32_t e = 0; e < longEntries; e++) {
 				uint32_t ordinal = longEntries - e;
 				uint16_t chars[LFN_CHARS_PER_ENTRY];
 				for (uint32_t k = 0; k < LFN_CHARS_PER_ENTRY; k++) {
 					uint32_t position = (ordinal - 1) * LFN_CHARS_PER_ENTRY + k;
-					if (position < (uint32_t)longLength) chars[k] = longName[position];
-					else if (position == (uint32_t)longLength) chars[k] = 0x0000;
+					if (position < static_cast<uint32_t>(longLength)) chars[k] = longName[position];
+					else if (position == static_cast<uint32_t>(longLength)) chars[k] = 0x0000;
 					else chars[k] = 0xFFFF;
 				}
-				DirectoryEntryLong *entry = (DirectoryEntryLong*)&entries[e];
-				memset(entry, 0, sizeof(*entry));
-				entry->LDIR_Ord = (uint8_t)(ordinal | (e == 0 ? LFN_LAST_ENTRY : 0));
-				memcpy(entry->LDIR_Name1, chars, sizeof(entry->LDIR_Name1));
-				memcpy(entry->LDIR_Name2, chars + 5, sizeof(entry->LDIR_Name2));
-				memcpy(entry->LDIR_Name3, chars + 11, sizeof(entry->LDIR_Name3));
-				entry->LDIR_Attr = ATTR_LONG_NAME;
-				entry->LDIR_Type = 0;
-				entry->LDIR_Chksum = checksum;
-				entry->LDIR_FstClusLO = 0;
+				DirectoryEntryLong entry;
+				memset(&entry, 0, sizeof(entry));
+				entry.LDIR_Ord = static_cast<uint8_t>(ordinal | (e == 0 ? LFN_LAST_ENTRY : 0));
+				memcpy(entry.LDIR_Name1, chars, sizeof(entry.LDIR_Name1));
+				memcpy(entry.LDIR_Name2, chars + 5, sizeof(entry.LDIR_Name2));
+				memcpy(entry.LDIR_Name3, chars + 11, sizeof(entry.LDIR_Name3));
+				entry.LDIR_Attr = ATTR_LONG_NAME;
+				entry.LDIR_Type = 0;
+				entry.LDIR_Chksum = checksum;
+				entry.LDIR_FstClusLO = 0;
+				memcpy(&entries[e], &entry, sizeof(entry));
 			}
 			initEntry(entries[longEntries], shortName, attr);
 			setEntryFirstCluster(entries[longEntries], firstCluster);
 
-			writeEntries(entries, longEntries + 1);
-			if (!mdError) {
-				memcpy(m_longName, longName, (uint32_t)longLength * sizeof(uint16_t));
-				m_longNameLength = (uint32_t)longLength;
-			}
-			delete[] entries;
-			delete[] longName;
-			return;
+			if (md_error_t error = writeEntries(entries.get(), longEntries + 1)) return error;
+			memcpy(m_longName.get(), longName.get(), static_cast<uint32_t>(longLength) * sizeof(uint16_t));
+			m_longNameLength = static_cast<uint32_t>(longLength);
+			return 0;
 		}
 #else
 		(void)isPlainShortName;
 #endif
-		if (!isShortName) {
-			mdError = File_invalidName;
-			return;
-		}
+		if (!isShortName) return File_invalidName;
 		DirectoryEntry entry;
 		initEntry(entry, shortName, attr);
 		setEntryFirstCluster(entry, firstCluster);
-		writeEntries(&entry, 1);
+		return writeEntries(&entry, 1);
 	}
 
 	/******************************** Directories ********************************/
 
-	void makeDirectory(Fat &drive, const char *path, const char *name) {
-		mdError = 0;
+	md_error_t makeDirectory(Fat &drive, const char *path, const char *name) {
+		DirectoryListing parent(drive);
+		if (md_error_t error = parent.open(path)) return error;
+		if (parent.find(name)) return File_alreadyExists;
+		if (md_error_t error = parent.error()) return error;
 
-		DirectoryListing parent(drive, path);
-		if (mdError) return;
-		if (parent.find(name)) {
-			mdError = File_alreadyExists;
-			return;
-		}
-		if (mdError) return;
-
-		cluster_t cluster = drive.allocateCluster(0);
-		if (mdError) return;
+		cluster_t cluster;
+		if (md_error_t error = drive.allocateCluster(0, cluster)) return error;
 
 		// "." and ".." entries; ".." is cluster 0 when the parent is the root.
 		DirectoryEntry dots[2];
@@ -797,17 +758,11 @@ MFS_NAMESPACE_BEGIN
 		initEntry(dots[1], "..         ", ATTR_DIRECTORY);
 		cluster_t parentCluster = parent.startCluster();
 		setEntryFirstCluster(dots[1], parentCluster == drive.getRootDirectoryCluster() ? 0 : parentCluster);
-		drive.write(cluster, 0, (const uint8_t*)dots, sizeof(dots));
-		if (mdError) return;
 
-		parent.createEntry(name, ATTR_DIRECTORY, cluster);
-		if (mdError) {
-			// freeChain stops at an error already set, so clear it while freeing
-			md_error_t error = mdError;
-			mdError = 0;
-			drive.freeChain(cluster);
-			mdError = error;
-		}
+		md_error_t error = drive.write(cluster, 0, reinterpret_cast<const uint8_t*>(dots), sizeof(dots));
+		if (!error) error = parent.createEntry(name, ATTR_DIRECTORY, cluster);
+		if (error) drive.freeChain(cluster);
+		return error;
 	}
 
 MFS_NAMESPACE_END

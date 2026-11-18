@@ -17,13 +17,13 @@ MFS_NAMESPACE_BEGIN
  */
 
 /** Maximum long name length in UTF-16 code units. */
-const int LFN_MAX_LENGTH = 255;
+constexpr uint32_t LFN_MAX_LENGTH = 255;
 /** Characters stored per long name entry. */
-const int LFN_CHARS_PER_ENTRY = 13;
+constexpr uint32_t LFN_CHARS_PER_ENTRY = 13;
 /** Maximum long name entries for one name: ceil(255 / 13). */
-const int LFN_MAX_ENTRIES = 20;
+constexpr uint32_t LFN_MAX_ENTRIES = 20;
 /** Set on the ordinal of the first physical (last logical) long name entry. */
-const int LFN_LAST_ENTRY = 0x40;
+constexpr uint32_t LFN_LAST_ENTRY = 0x40;
 
 	namespace Lfn {
 		/** Checksum of an 11 byte short name, stored in each of its long name entries. */
@@ -54,7 +54,7 @@ const int LFN_LAST_ENTRY = 0x40;
 		 * truncated to 8.3. lossy is set when the basis does not represent the name
 		 * exactly (ignoring case), meaning a numeric tail ("~1") is required.
 		 */
-		void makeBasisName(const uint16_t *name, uint32_t length, char out[11], bool *lossy);
+		void makeBasisName(const uint16_t *name, uint32_t length, char out[11], bool &lossy);
 
 		/** Apply numeric tail n to a basis name, e.g. ("LONGFILE", "TXT"), 1 -> "LONGFI~1TXT". */
 		void applyNumericTail(const char basis[11], uint32_t n, char out[11]);

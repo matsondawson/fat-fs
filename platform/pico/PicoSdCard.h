@@ -17,8 +17,9 @@ MFS_NAMESPACE_BEGIN
  *
  *     PicoSdCard sd(spi1, 10, 11, 12, 13);   // SCK, MOSI, MISO, CS
  *     if (sd.begin()) { printf("%s\n", sd.lastError()); }
- *     Partition partition(sd, Partition::primary(0));
+ *     Partition partition(sd);
  *     Fat fat(partition);
+ *     if (partition.open(Partition::primary(0)) == 0 && fat.mount() == 0) { ... }
  *
  * Reads use a multiple block read (CMD18) that is left open, so reading the
  * sector after the last one read is just the next block of the stream, with no
@@ -68,7 +69,7 @@ public:
 	PicoSdCard(spi_inst_t *spi, uint32_t sck, uint32_t mosi, uint32_t miso, uint32_t cs,
 	           uint32_t hz = DEFAULT_HZ);
 	/** Waits for any read ahead, closes the stream and releases DMA channels it claimed. */
-	~PicoSdCard();
+	~PicoSdCard() override;
 	PicoSdCard(const PicoSdCard&) = delete;
 	PicoSdCard& operator=(const PicoSdCard&) = delete;
 
@@ -126,11 +127,11 @@ public:
 	const Stats &getStats() const { return m_stats; }
 	void resetStats();
 
-	virtual md_error_t read(uint8_t *data, sector_t sector);
-	virtual md_error_t write(const uint8_t *data, sector_t sector);
-	virtual uint32_t getBytesPerSector() const { return 512; }
+	md_error_t read(uint8_t *data, sector_t sector) override;
+	md_error_t write(const uint8_t *data, sector_t sector) override;
+	uint32_t getBytesPerSector() const override { return 512; }
 	/** Waits for any read ahead and closes the read stream, leaving the card idle. */
-	virtual md_error_t flush();
+	md_error_t flush() override;
 
 private:
 	spi_inst_t *m_spi;

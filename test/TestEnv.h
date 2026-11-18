@@ -12,7 +12,7 @@
 #include "net/mdawson/filesystem/Fat.h"
 #include "net/mdawson/filesystem/FatFormat.h"
 #include "net/mdawson/filesystem/File.h"
-#include "net/mdawson/filesystem/GlobalError.h"
+#include "net/mdawson/filesystem/Error.h"
 #include "net/mdawson/filesystem/MemorySectorDevice.h"
 #include "net/mdawson/filesystem/Partition.h"
 
@@ -35,7 +35,7 @@ struct TestConfig {
 	/** Iterations for randomized tests. */
 	uint32_t randomIterations;
 	/** Format of the volumes Volume makes. */
-	FatFormat_e format;
+	FatFormat format;
 };
 
 /** Clusters a new volume's root directory takes: 1 on FAT32, none for the fixed FAT12/16 root. */
@@ -65,7 +65,10 @@ struct Disk {
  */
 struct Volume {
 	Disk disk;
+	/** Null if formatting failed. */
 	Fat *fat;
+	/** Result of formatting and mounting (or of the last remount()). */
+	md_error_t error;
 
 	explicit Volume(uint8_t sectorsPerCluster = 1, sector_t sectors = VOLUME_SECTORS);
 	~Volume();
@@ -73,7 +76,7 @@ struct Volume {
 	Volume& operator=(const Volume&) = delete;
 
 	/** Unmount and mount again (flushing first). */
-	void remount();
+	md_error_t remount();
 };
 
 uint8_t pattern(uint32_t i, uint32_t seed);
@@ -81,7 +84,7 @@ void fillPattern(uint8_t *buffer, uint32_t length, uint32_t start, uint32_t seed
 bool matchesPattern(const uint8_t *buffer, uint32_t length, uint32_t start, uint32_t seed);
 
 /** Write length pattern bytes to a new (or replaced) file in chunks. */
-void writeFile(Fat &fat, const char *path, const char *name, uint32_t length, uint32_t seed, uint32_t chunk);
+md_error_t writeFile(Fat &fat, const char *path, const char *name, uint32_t length, uint32_t seed, uint32_t chunk);
 /** Read a whole file in chunks and check it matches the pattern. */
 bool verifyFile(Fat &fat, const char *path, const char *name, uint32_t length, uint32_t seed, uint32_t chunk);
 /** Number of entries a DirectoryListing returns, or -1 on error. */

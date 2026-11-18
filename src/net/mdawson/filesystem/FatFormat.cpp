@@ -1,20 +1,22 @@
 #include "FatFormat.h"
 
 #include "net/mdawson/filesystem/FatStructures.h"
-#include "net/mdawson/filesystem/GlobalError.h"
+#include "net/mdawson/filesystem/Endian.h"
+#include "net/mdawson/filesystem/Error.h"
 #include "net/mdawson/filesystem/Sector.h"
 
+#include <stddef.h>
 #include <string.h>
 
 MFS_NAMESPACE_BEGIN
 
 
-	static const uint32_t RESERVED_SECTORS = 32;
-	static const uint32_t NUM_FATS = 2;
-	static const uint32_t ROOT_CLUSTER = 2;
-	static const uint32_t FSINFO_SECTOR = 1;
-	static const uint32_t BACKUP_BOOT_SECTOR = 6;
-	static const uint8_t MEDIA_FIXED = 0xF8;
+	constexpr uint32_t RESERVED_SECTORS = 32;
+	constexpr uint32_t NUM_FATS = 2;
+	constexpr uint32_t ROOT_CLUSTER = 2;
+	constexpr uint32_t FSINFO_SECTOR = 1;
+	constexpr uint32_t BACKUP_BOOT_SECTOR = 6;
+	constexpr uint8_t MEDIA_FIXED = 0xF8;
 
 	static uint8_t defaultSectorsPerCluster(sector_t sectorCount) {
 		// Microsoft's recommended FAT32 cluster sizes.
@@ -25,28 +27,25 @@ MFS_NAMESPACE_BEGIN
 		return 64;                                // 32K
 	}
 
-	static bool writeSector(Sector &sector, sector_t number) {
-		if (md_error_t error = sector.write(number)) {
-			mdError = error;
-			return false;
+	static void setLabel(uint8_t out[11], const char *label) {
+		memset(out, ' ', 11);
+		const char *volumeLabel = label ? label : "NO NAME";
+		for (int i = 0; i < 11 && volumeLabel[i]; i++) {
+			char ch = volumeLabel[i];
+			out[i] = static_cast<uint8_t>((ch >= 'a' && ch <= 'z') ? ch - 'a' + 'A' : ch);
 		}
-		return true;
 	}
 
-	void formatFat32(SectorDevice &device, sector_t sectorCount, uint8_t sectorsPerCluster,
-	                 const char *label, uint32_t volumeId) {
-		mdError = 0;
-
+	md_error_t formatFat32(SectorDevice &device, sector_t sectorCount, uint8_t sectorsPerCluster,
+	                       const char *label, uint32_t volumeId) {
 		if (sectorsPerCluster == 0) {
 			sectorsPerCluster = defaultSectorsPerCluster(sectorCount);
 		}
 		if (sectorsPerCluster > 64 || (sectorsPerCluster & (sectorsPerCluster - 1)) != 0) {
-			mdError = Fat_formatInvalidClusterSize;
-			return;
+			return Fat_formatInvalidClusterSize;
 		}
 		if (sectorCount <= RESERVED_SECTORS) {
-			mdError = Fat_formatVolumeTooSmall;
-			return;
+			return Fat_formatVolumeTooSmall;
 		}
 
 		// FAT size calculation from the Microsoft FAT specification.
@@ -57,87 +56,84 @@ MFS_NAMESPACE_BEGIN
 		uint32_t dataSectors = sectorCount - RESERVED_SECTORS - NUM_FATS * fatSize;
 		uint32_t clusterCount = dataSectors / sectorsPerCluster;
 		if (clusterCount < 65525) {
-			mdError = Fat_formatVolumeTooSmall;
-			return;
+			return Fat_formatVolumeTooSmall;
 		}
 
 		Sector sector(device);
 
 		// Clear the reserved region and the FATs.
-		memset(sector.m_data, 0, SECTOR_SIZE);
+		memset(sector.data(), 0, SECTOR_SIZE);
 		for (sector_t s = 0; s < RESERVED_SECTORS + NUM_FATS * fatSize; s++) {
-			if (!writeSector(sector, s)) return;
+			if (md_error_t error = sector.write(s)) return error;
 		}
 		// Clear the root directory cluster.
 		sector_t firstDataSector = RESERVED_SECTORS + NUM_FATS * fatSize;
 		for (uint32_t s = 0; s < sectorsPerCluster; s++) {
-			if (!writeSector(sector, firstDataSector + (ROOT_CLUSTER - 2) * sectorsPerCluster + s)) return;
+			if (md_error_t error = sector.write(firstDataSector + (ROOT_CLUSTER - 2) * sectorsPerCluster + s)) return error;
 		}
 
 		// Boot sector
-		BPB_t *bpb = (BPB_t*)sector.m_data;
-		bpb->BS_jmpBoot[0] = 0xEB;
-		bpb->BS_jmpBoot[1] = 0x58;
-		bpb->BS_jmpBoot[2] = 0x90;
-		memcpy(bpb->BS_OEMName, "MSWIN4.1", 8);
-		bpb->BPB_BytesPerSec = SECTOR_SIZE;
-		bpb->BPB_SecPerClus = sectorsPerCluster;
-		bpb->BPB_RsvdSecCnt = RESERVED_SECTORS;
-		bpb->BPB_NumFATs = NUM_FATS;
-		bpb->BPB_RootEntCnt = 0;
-		bpb->BPB_TotSec16 = 0;
-		bpb->BPB_Media = MEDIA_FIXED;
-		bpb->BPB_FATSz16 = 0;
-		bpb->BPB_SecPerTrk = 63;
-		bpb->BPB_NumHeads = 255;
-		bpb->BPB_HiddSec = 0;
-		bpb->BPB_TotSec32 = sectorCount;
-		bpb->bpb.bpb32.BPB_FATSz32 = fatSize;
-		bpb->bpb.bpb32.BPB_ExtFlags = 0;
-		bpb->bpb.bpb32.BPB_FSVer = 0;
-		bpb->bpb.bpb32.BPB_RootClus = ROOT_CLUSTER;
-		bpb->bpb.bpb32.BPB_FSInfo = FSINFO_SECTOR;
-		bpb->bpb.bpb32.BPB_BkBootSec = BACKUP_BOOT_SECTOR;
-		bpb->bpb.bpb32.BS_DrvNum = 0x80;
-		bpb->bpb.bpb32.BS_BootSig = 0x29;
-		bpb->bpb.bpb32.BS_VolID = volumeId;
-		memset(bpb->bpb.bpb32.BS_VolLab, ' ', 11);
-		const char *volumeLabel = label ? label : "NO NAME";
-		for (int i = 0; i < 11 && volumeLabel[i]; i++) {
-			char ch = volumeLabel[i];
-			bpb->bpb.bpb32.BS_VolLab[i] = (ch >= 'a' && ch <= 'z') ? (char)(ch - 'a' + 'A') : ch;
-		}
-		memcpy(bpb->bpb.bpb32.BS_FilSysType, "FAT32   ", 8);
-		sector.m_data[510] = 0x55;
-		sector.m_data[511] = 0xAA;
-		if (!writeSector(sector, 0)) return;
-		if (!writeSector(sector, BACKUP_BOOT_SECTOR)) return;
+		BPB bpb;
+		memset(&bpb, 0, sizeof(bpb));
+		bpb.BS_jmpBoot[0] = 0xEB;
+		bpb.BS_jmpBoot[1] = 0x58;
+		bpb.BS_jmpBoot[2] = 0x90;
+		memcpy(bpb.BS_OEMName, "MSWIN4.1", 8);
+		bpb.BPB_BytesPerSec = SECTOR_SIZE;
+		bpb.BPB_SecPerClus = sectorsPerCluster;
+		bpb.BPB_RsvdSecCnt = RESERVED_SECTORS;
+		bpb.BPB_NumFATs = NUM_FATS;
+		bpb.BPB_RootEntCnt = 0;
+		bpb.BPB_TotSec16 = 0;
+		bpb.BPB_Media = MEDIA_FIXED;
+		bpb.BPB_FATSz16 = 0;
+		bpb.BPB_SecPerTrk = 63;
+		bpb.BPB_NumHeads = 255;
+		bpb.BPB_HiddSec = 0;
+		bpb.BPB_TotSec32 = sectorCount;
+		bpb.bpb.bpb32.BPB_FATSz32 = fatSize;
+		bpb.bpb.bpb32.BPB_ExtFlags = 0;
+		bpb.bpb.bpb32.BPB_FSVer = 0;
+		bpb.bpb.bpb32.BPB_RootClus = ROOT_CLUSTER;
+		bpb.bpb.bpb32.BPB_FSInfo = FSINFO_SECTOR;
+		bpb.bpb.bpb32.BPB_BkBootSec = BACKUP_BOOT_SECTOR;
+		bpb.bpb.bpb32.BS_DrvNum = 0x80;
+		bpb.bpb.bpb32.BS_BootSig = 0x29;
+		bpb.bpb.bpb32.BS_VolID = volumeId;
+		setLabel(bpb.bpb.bpb32.BS_VolLab, label);
+		memcpy(bpb.bpb.bpb32.BS_FilSysType, "FAT32   ", 8);
+		memcpy(sector.data(), &bpb, sizeof(bpb));
+		sector.data()[510] = 0x55;
+		sector.data()[511] = 0xAA;
+		if (md_error_t error = sector.write(0)) return error;
+		if (md_error_t error = sector.write(BACKUP_BOOT_SECTOR)) return error;
 
 		// FSInfo
-		memset(sector.m_data, 0, SECTOR_SIZE);
-		FSInfo_t *info = (FSInfo_t*)sector.m_data;
-		info->FSI_LeadSig = FSI_LEAD_SIG;
-		info->FSI_StrucSig = FSI_STRUC_SIG;
-		info->FSI_Free_Count = clusterCount - 1; // root directory uses one cluster
-		info->FSI_Nxt_Free = ROOT_CLUSTER + 1;
-		info->FSI_TrailSig = FSI_TRAIL_SIG;
-		if (!writeSector(sector, FSINFO_SECTOR)) return;
-		if (!writeSector(sector, BACKUP_BOOT_SECTOR + 1)) return;
+		uint8_t *info = sector.data();
+		memset(info, 0, SECTOR_SIZE);
+		writeLe32(info + offsetof(FSInfo, FSI_LeadSig), FSI_LEAD_SIG);
+		writeLe32(info + offsetof(FSInfo, FSI_StrucSig), FSI_STRUC_SIG);
+		writeLe32(info + offsetof(FSInfo, FSI_Free_Count), clusterCount - 1); // root directory uses one cluster
+		writeLe32(info + offsetof(FSInfo, FSI_Nxt_Free), ROOT_CLUSTER + 1);
+		writeLe32(info + offsetof(FSInfo, FSI_TrailSig), FSI_TRAIL_SIG);
+		if (md_error_t error = sector.write(FSINFO_SECTOR)) return error;
+		if (md_error_t error = sector.write(BACKUP_BOOT_SECTOR + 1)) return error;
 
 		// First FAT sector: media descriptor, reserved entry, root directory end-of-chain.
-		memset(sector.m_data, 0, SECTOR_SIZE);
-		uint32_t *fat = (uint32_t*)sector.m_data;
-		fat[0] = 0x0FFFFF00u | MEDIA_FIXED;
-		fat[1] = 0x0FFFFFFFu;
-		fat[ROOT_CLUSTER] = 0x0FFFFFFFu;
+		uint8_t *fat = sector.data();
+		memset(fat, 0, SECTOR_SIZE);
+		writeLe32(fat, 0x0FFFFF00u | MEDIA_FIXED);
+		writeLe32(fat + 4, 0x0FFFFFFFu);
+		writeLe32(fat + ROOT_CLUSTER * 4, 0x0FFFFFFFu);
 		for (uint32_t f = 0; f < NUM_FATS; f++) {
-			if (!writeSector(sector, RESERVED_SECTORS + f * fatSize)) return;
+			if (md_error_t error = sector.write(RESERVED_SECTORS + f * fatSize)) return error;
 		}
+		return 0;
 	}
 
 #ifdef MFS_FAT12_16
-	static const uint32_t SMALL_RESERVED_SECTORS = 1;
-	static const uint32_t ROOT_ENTRIES = 512;
+	constexpr uint32_t SMALL_RESERVED_SECTORS = 1;
+	constexpr uint32_t ROOT_ENTRIES = 512;
 
 	struct SmallLayout {
 		uint32_t fatSize;
@@ -163,7 +159,7 @@ MFS_NAMESPACE_BEGIN
 		}
 	}
 
-	static void formatSmall(SectorDevice &device, sector_t sectorCount, bool fat12, uint8_t sectorsPerCluster,
+	static md_error_t formatSmall(SectorDevice &device, sector_t sectorCount, bool fat12, uint8_t sectorsPerCluster,
 	                        const char *label, uint32_t volumeId) {
 		const uint32_t minClusters = fat12 ? 1 : 4085;
 		const uint32_t maxClusters = fat12 ? 4084 : 65524;
@@ -173,27 +169,22 @@ MFS_NAMESPACE_BEGIN
 			// The smallest cluster that keeps the count within the type's limit
 			for (sectorsPerCluster = 1; ; sectorsPerCluster *= 2) {
 				if (!smallLayout(sectorCount, sectorsPerCluster, fat12, layout) || layout.clusterCount < minClusters) {
-					mdError = Fat_formatVolumeTooSmall;
-					return;
+					return Fat_formatVolumeTooSmall;
 				}
 				if (layout.clusterCount <= maxClusters) break;
 				if (sectorsPerCluster == 64) {
-					mdError = Fat_formatVolumeTooLarge;
-					return;
+					return Fat_formatVolumeTooLarge;
 				}
 			}
 		} else {
 			if (sectorsPerCluster > 64 || (sectorsPerCluster & (sectorsPerCluster - 1)) != 0) {
-				mdError = Fat_formatInvalidClusterSize;
-				return;
+				return Fat_formatInvalidClusterSize;
 			}
 			if (!smallLayout(sectorCount, sectorsPerCluster, fat12, layout) || layout.clusterCount < minClusters) {
-				mdError = Fat_formatVolumeTooSmall;
-				return;
+				return Fat_formatVolumeTooSmall;
 			}
 			if (layout.clusterCount > maxClusters) {
-				mdError = Fat_formatVolumeTooLarge;
-				return;
+				return Fat_formatVolumeTooLarge;
 			}
 		}
 
@@ -201,68 +192,64 @@ MFS_NAMESPACE_BEGIN
 		Sector sector(device);
 
 		// Clear the reserved sector, the FATs and the root directory.
-		memset(sector.m_data, 0, SECTOR_SIZE);
+		memset(sector.data(), 0, SECTOR_SIZE);
 		for (sector_t s = 0; s < SMALL_RESERVED_SECTORS + NUM_FATS * layout.fatSize + rootSectors; s++) {
-			if (!writeSector(sector, s)) return;
+			if (md_error_t error = sector.write(s)) return error;
 		}
 
 		// Boot sector
-		BPB_t *bpb = (BPB_t*)sector.m_data;
-		bpb->BS_jmpBoot[0] = 0xEB;
-		bpb->BS_jmpBoot[1] = 0x3C;
-		bpb->BS_jmpBoot[2] = 0x90;
-		memcpy(bpb->BS_OEMName, "MSWIN4.1", 8);
-		bpb->BPB_BytesPerSec = SECTOR_SIZE;
-		bpb->BPB_SecPerClus = sectorsPerCluster;
-		bpb->BPB_RsvdSecCnt = SMALL_RESERVED_SECTORS;
-		bpb->BPB_NumFATs = NUM_FATS;
-		bpb->BPB_RootEntCnt = ROOT_ENTRIES;
-		bpb->BPB_TotSec16 = sectorCount < 0x10000 ? (uint16_t)sectorCount : 0;
-		bpb->BPB_Media = MEDIA_FIXED;
-		bpb->BPB_FATSz16 = (uint16_t)layout.fatSize;
-		bpb->BPB_SecPerTrk = 63;
-		bpb->BPB_NumHeads = 255;
-		bpb->BPB_HiddSec = 0;
-		bpb->BPB_TotSec32 = sectorCount < 0x10000 ? 0 : sectorCount;
-		bpb->bpb.bpb16.BS_DrvNum = 0x80;
-		bpb->bpb.bpb16.BS_Reserved1 = 0;
-		bpb->bpb.bpb16.BS_BootSig = 0x29;
-		bpb->bpb.bpb16.BS_VolID = volumeId;
-		memset(bpb->bpb.bpb16.BS_VolLab, ' ', 11);
-		const char *volumeLabel = label ? label : "NO NAME";
-		for (int i = 0; i < 11 && volumeLabel[i]; i++) {
-			char ch = volumeLabel[i];
-			bpb->bpb.bpb16.BS_VolLab[i] = (ch >= 'a' && ch <= 'z') ? (char)(ch - 'a' + 'A') : ch;
-		}
-		memcpy(bpb->bpb.bpb16.BS_FilSysType, fat12 ? "FAT12   " : "FAT16   ", 8);
-		sector.m_data[510] = 0x55;
-		sector.m_data[511] = 0xAA;
-		if (!writeSector(sector, 0)) return;
+		BPB bpb;
+		memset(&bpb, 0, sizeof(bpb));
+		bpb.BS_jmpBoot[0] = 0xEB;
+		bpb.BS_jmpBoot[1] = 0x3C;
+		bpb.BS_jmpBoot[2] = 0x90;
+		memcpy(bpb.BS_OEMName, "MSWIN4.1", 8);
+		bpb.BPB_BytesPerSec = SECTOR_SIZE;
+		bpb.BPB_SecPerClus = sectorsPerCluster;
+		bpb.BPB_RsvdSecCnt = SMALL_RESERVED_SECTORS;
+		bpb.BPB_NumFATs = NUM_FATS;
+		bpb.BPB_RootEntCnt = ROOT_ENTRIES;
+		bpb.BPB_TotSec16 = sectorCount < 0x10000 ? static_cast<uint16_t>(sectorCount) : 0;
+		bpb.BPB_Media = MEDIA_FIXED;
+		bpb.BPB_FATSz16 = static_cast<uint16_t>(layout.fatSize);
+		bpb.BPB_SecPerTrk = 63;
+		bpb.BPB_NumHeads = 255;
+		bpb.BPB_HiddSec = 0;
+		bpb.BPB_TotSec32 = sectorCount < 0x10000 ? 0 : sectorCount;
+		bpb.bpb.bpb16.BS_DrvNum = 0x80;
+		bpb.bpb.bpb16.BS_Reserved1 = 0;
+		bpb.bpb.bpb16.BS_BootSig = 0x29;
+		bpb.bpb.bpb16.BS_VolID = volumeId;
+		setLabel(bpb.bpb.bpb16.BS_VolLab, label);
+		memcpy(bpb.bpb.bpb16.BS_FilSysType, fat12 ? "FAT12   " : "FAT16   ", 8);
+		memcpy(sector.data(), &bpb, sizeof(bpb));
+		sector.data()[510] = 0x55;
+		sector.data()[511] = 0xAA;
+		if (md_error_t error = sector.write(0)) return error;
 
 		// First FAT sector: the media descriptor and the reserved entry 1
-		memset(sector.m_data, 0, SECTOR_SIZE);
-		sector.m_data[0] = MEDIA_FIXED;
-		sector.m_data[1] = 0xFF;
-		sector.m_data[2] = 0xFF;
-		if (!fat12) sector.m_data[3] = 0xFF;
+		memset(sector.data(), 0, SECTOR_SIZE);
+		sector.data()[0] = MEDIA_FIXED;
+		sector.data()[1] = 0xFF;
+		sector.data()[2] = 0xFF;
+		if (!fat12) sector.data()[3] = 0xFF;
 		for (uint32_t f = 0; f < NUM_FATS; f++) {
-			if (!writeSector(sector, SMALL_RESERVED_SECTORS + f * layout.fatSize)) return;
+			if (md_error_t error = sector.write(SMALL_RESERVED_SECTORS + f * layout.fatSize)) return error;
 		}
+		return 0;
 	}
 #endif
 
-	void formatFat(SectorDevice &device, sector_t sectorCount, FatFormat_e format, uint8_t sectorsPerCluster,
-	               const char *label, uint32_t volumeId) {
-		mdError = 0;
-		if (format == Format_FAT32) {
-			formatFat32(device, sectorCount, sectorsPerCluster, label, volumeId);
-			return;
+	md_error_t formatFat(SectorDevice &device, sector_t sectorCount, FatFormat format, uint8_t sectorsPerCluster,
+	                     const char *label, uint32_t volumeId) {
+		if (format == FatFormat::FAT32) {
+			return formatFat32(device, sectorCount, sectorsPerCluster, label, volumeId);
 		}
 #ifdef MFS_FAT12_16
-		formatSmall(device, sectorCount, format == Format_FAT12, sectorsPerCluster, label, volumeId);
+		return formatSmall(device, sectorCount, format == FatFormat::FAT12, sectorsPerCluster, label, volumeId);
 #else
 		(void)device; (void)sectorCount; (void)sectorsPerCluster; (void)label; (void)volumeId;
-		mdError = format == Format_FAT12 ? Fat_Fat12FormatUnsupported : Fat_Fat16FormatUnsupported;
+		return format == FatFormat::FAT12 ? Fat_Fat12FormatUnsupported : Fat_Fat16FormatUnsupported;
 #endif
 	}
 

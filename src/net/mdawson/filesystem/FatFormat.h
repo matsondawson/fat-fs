@@ -15,27 +15,27 @@ MFS_NAMESPACE_BEGIN
 	 * @param label Volume label (up to 11 characters), or 0 for "NO NAME".
 	 * @param volumeId Volume serial number.
 	 *
-	 * Sets mdError on failure (e.g. Fat_formatVolumeTooSmall: FAT32 needs at least
-	 * 65525 clusters, about 33MB with 512 byte clusters).
+	 * Fails with Fat_formatVolumeTooSmall (FAT32 needs at least 65525 clusters,
+	 * about 33MB with 512 byte clusters), Fat_formatInvalidClusterSize or a device error.
 	 */
-	void formatFat32(SectorDevice &device, sector_t sectorCount, uint8_t sectorsPerCluster = 0,
-	                 const char *label = 0, uint32_t volumeId = 0x4D465321);
+	md_error_t formatFat32(SectorDevice &device, sector_t sectorCount, uint8_t sectorsPerCluster = 0,
+	                       const char *label = nullptr, uint32_t volumeId = 0x4D465321);
 
 	/**
 	 * Format sectors [0, sectorCount) of device as a FAT12, FAT16 or FAT32 volume.
-	 * FAT32 is formatFat32(). FAT12 and FAT16 need MFS_FAT12_16 (otherwise mdError is
-	 * Fat_Fat12FormatUnsupported / Fat_Fat16FormatUnsupported) and use 1 reserved
+	 * FAT32 is formatFat32(). FAT12 and FAT16 need MFS_FAT12_16 (otherwise it fails
+	 * with Fat_Fat12FormatUnsupported / Fat_Fat16FormatUnsupported) and use 1 reserved
 	 * sector, 2 FATs and a 512 entry root directory.
 	 *
 	 * @param sectorsPerCluster 1..64 (power of two), or 0 for the smallest size that
 	 *        keeps the cluster count within the type's limit (FAT12: under 4085,
 	 *        FAT16: 4085 to 65524).
 	 *
-	 * Sets mdError on failure: Fat_formatVolumeTooSmall or Fat_formatVolumeTooLarge
-	 * when the cluster count doesn't suit the type.
+	 * Fails with Fat_formatVolumeTooSmall or Fat_formatVolumeTooLarge when the
+	 * cluster count doesn't suit the type.
 	 */
-	void formatFat(SectorDevice &device, sector_t sectorCount, FatFormat_e format, uint8_t sectorsPerCluster = 0,
-	               const char *label = 0, uint32_t volumeId = 0x4D465321);
+	md_error_t formatFat(SectorDevice &device, sector_t sectorCount, FatFormat format, uint8_t sectorsPerCluster = 0,
+	                     const char *label = nullptr, uint32_t volumeId = 0x4D465321);
 
 MFS_NAMESPACE_END
 

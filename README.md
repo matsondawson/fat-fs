@@ -35,7 +35,6 @@ cmake/fatConfig.cmake.in        CMake package for find_package(fat)
 | `FAT_LONG_FILE_NAMES` | `MFS_LONG_FILE_NAMES` | OFF (ON in `pico/`) | Long file names, UTF-8 API |
 | `FAT_BLOCK_CACHE`     | `MFS_BLOCK_CACHE`     | ON      | `CachedSectorDevice` |
 | `FAT_FAT12_16`        | `MFS_FAT12_16`        | OFF (ON in `pico/`) | FAT12 and FAT16 volumes, and formatting them |
-| `FAT_THREAD_LOCAL_ERROR` | `MFS_THREAD_LOCAL_ERROR` | OFF | `mdError` is `thread_local` (see [Threads](#threads)) |
 | `FAT_INSTALL`         |                       | ON when built on its own | Install rules and the CMake package |
 
 Code size on a Cortex-M0+ (`-Os`), in KB:
@@ -102,9 +101,8 @@ ctest --test-dir build --output-on-failure
 ```
 
 The test build covers the option combinations `plain`, `lfn`, `cache`,
-`lfn_cache`, `fat1216`, `lfn_cache_fat1216` and `lfn_cache_fat1216_tls` (with a
-thread local `mdError`, plus a test that runs volumes on several threads),
-whatever the options above are set to:
+`lfn_cache`, `fat1216` and `lfn_cache_fat1216`, whatever the options above are
+set to:
 
 - `unit_<variant>` (`build/fat_tests_<variant> [filter]`): the portable test suite
   on RAM disks, built with AddressSanitizer and UBSan (turn off with
@@ -202,8 +200,9 @@ repository with `add_subdirectory()` from a pico-sdk project defines the
 Mfs::PicoSdCard sd(spi1, 10, 11, 12, 13);        // SCK, MOSI, MISO, CS; 25 MHz
 sd.setCardDetect(17);                            // optional, low with a card in
 if (sd.begin()) { printf("%s\n", sd.lastError()); }
-Mfs::Partition partition(sd, Mfs::Partition::primary(0));
+Mfs::Partition partition(sd);
 Mfs::Fat fat(partition);
+if (partition.open(Mfs::Partition::primary(0)) || fat.mount()) { /* no card, or not FAT */ }
 ```
 
 `begin()` checks that the pins belong to that SPI instance. The card must be
@@ -249,27 +248,43 @@ link `fat::fat`, as `pico/CMakeLists.txt` does (see
 ## Using it
 
 ```cpp
+#include "net/mdawson/filesystem/Error.h"
 #include "net/mdawson/filesystem/Fat.h"
 #include "net/mdawson/filesystem/File.h"
-#include "net/mdawson/filesystem/GlobalError.h"
 #include "net/mdawson/filesystem/Partition.h"
 
 MySdCard sd;                                     // your Mfs::SectorDevice
-Mfs::Partition partition(sd, Mfs::Partition::primary(0));  // or Partition::WHOLE_DEVICE
+Mfs::Partition partition(sd);
 Mfs::Fat fat(partition);
-if (Mfs::mdError) { /* not FAT32, or no card */ }
+if (Mfs::md_error_t error = partition.open(Mfs::Partition::primary(0))) { /* or Partition::WHOLE_DEVICE */ }
+if (Mfs::md_error_t error = fat.mount()) { /* not FAT, or no card */ }
 
-Mfs::File log(fat, "/LOGS", "DATA.CSV", true);   // true = create if missing
+Mfs::File log(fat);
+if (Mfs::md_error_t error = log.open("/LOGS", "DATA.CSV", true)) { /* true = create if missing */ }
 log.seek(log.length());                          // append
-log.write((const uint8_t*)"1,2,3\n", 6);
-if (Mfs::mdError) { /* handle */ }
+const char line[] = "1,2,3\n";
+if (Mfs::md_error_t error = log.write(reinterpret_cast<const uint8_t*>(line), sizeof(line) - 1)) { /* handle */ }
+
+uint8_t buffer[64];
+uint32_t bytesRead;
+log.seek(0);
+log.read(buffer, sizeof(buffer), bytesRead);     // fewer than asked at the end of the file
+
+Mfs::DirectoryListing dir(fat);
+if (dir.open("/LOGS") == 0) {
+	while (dir.next()) {
+		char name[256];
+		dir.name(name, sizeof(name));
+	}
+	if (dir.error()) { /* the listing stopped on an error, not at the end */ }
+}
 ```
 
 With a block cache (`MFS_BLOCK_CACHE`) in front of the card:
 
 ```cpp
 Mfs::CachedSectorDevice cache(sd);                   // 4 slots = 2 KB by default
-Mfs::Partition partition(cache, Mfs::Partition::primary(0));
+Mfs::Partition partition(cache);
 Mfs::Fat fat(partition);
 ```
 
@@ -289,7 +304,8 @@ for the first write to an empty file, which stores the entry immediately so
 a new cluster chain is never left unreferenced. Data is written to the card by:
 
 - `File::flush()`: stores the file's directory entry and flushes the device.
-- `File::close()` and the `File` destructor: flush, then close.
+- `File::close()` and the `File` destructor: flush, then close. The destructor
+  can't report an error, so call `close()` to find out whether it worked.
 - Destroying the `Fat` object (unmount), which closes any `File`s still open
   on it. `Fat::flush()` flushes the device but not the sizes of open files.
 - Destroying the `CachedSectorDevice`.
@@ -331,7 +347,7 @@ of 2 GB and under as they come, and `getFormat()` says which it is. The API is
 the same for all three. To format one:
 
 ```cpp
-Mfs::formatFat(sd, sectorCount, Mfs::Format_FAT16);   // or Format_FAT12, Format_FAT32
+Mfs::formatFat(sd, sectorCount, Mfs::FatFormat::FAT16);   // or FAT12, FAT32
 ```
 
 `formatFat` picks the smallest cluster size that keeps the cluster count within
@@ -340,9 +356,15 @@ the type's limits (FAT12 under 4085, FAT16 4085 to 65524), or fails with
 
 ### Errors and new storage
 
-Errors are reported through `Mfs::mdError` (codes in `GlobalError.h`, such as
-`Mfs::File_fileNotFound`) rather than exceptions, so the code works with
-`-fno-exceptions`. Set it to 0 before an operation whose result you check.
+Every operation that can fail returns an `md_error_t`: 0 for success, or a code
+from `Error.h` such as `Mfs::File_fileNotFound`. Other results come back through
+reference parameters (`File::read(data, size, bytesRead)`). There are no
+exceptions, so the code works with `-fno-exceptions`, and no global error
+state. Objects are made in two steps, because a constructor can't return an
+error: `Fat` then `mount()`, `Partition` then `open()`, `File` and
+`DirectoryListing` then `open()`. `DirectoryListing::next()` and `find()`
+return whether they found an entry, so they can drive a loop; when they return
+false, `error()` tells the end of the directory (0) from a failure.
 
 To support new storage, implement `Mfs::SectorDevice`: `read`, `write` and
 `getBytesPerSector` (must be 512).
@@ -350,12 +372,9 @@ To support new storage, implement `Mfs::SectorDevice`: `read`, `write` and
 ### Threads
 
 The driver has no locks. A volume, and the `File` and `DirectoryListing`
-objects on it, must only be used from one thread at a time.
-
-By default `mdError` is a single variable shared by every thread. With
-`FAT_THREAD_LOCAL_ERROR` it is `thread_local`, so threads that each use their own
-volume (two SD cards, say) see only their own errors. That needs thread local
-storage from your toolchain and RTOS; on bare metal leave it off.
+objects on it, must only be used from one thread at a time. It has no global
+state, so threads that each use their own volume (two SD cards, say) don't
+affect each other; the host tests check this.
 
 ## Limitations
 

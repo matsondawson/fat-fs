@@ -33,10 +33,10 @@ public:
 
 	void resetCounts();
 
-	virtual md_error_t read(uint8_t* data, sector_t sector);
-	virtual md_error_t write(const uint8_t* data, sector_t sector);
-	virtual uint32_t getBytesPerSector() const;
-	virtual md_error_t flush();
+	md_error_t read(uint8_t* data, sector_t sector) override;
+	md_error_t write(const uint8_t* data, sector_t sector) override;
+	uint32_t getBytesPerSector() const override;
+	md_error_t flush() override;
 };
 
 #endif

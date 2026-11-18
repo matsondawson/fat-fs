@@ -3,9 +3,11 @@
 
 #include "net/mdawson/filesystem/SectorDevice.h"
 
+#include <memory>
+
 MFS_NAMESPACE_BEGIN
 
-const int SECTOR_SIZE = 512;
+constexpr uint32_t SECTOR_SIZE = 512;
 
 /**
  * A single sector buffer. The buffer is either the caller's, which must hold
@@ -15,22 +17,20 @@ const int SECTOR_SIZE = 512;
 class Sector
 {
 private:
-	sector_t m_sector;
 	SectorDevice *m_sectorDevice;
-	bool m_ownsData;
-
-public:
+	std::unique_ptr<uint8_t[]> m_owned;
 	uint8_t *m_data;
 
-	Sector(SectorDevice &device);
+public:
+	explicit Sector(SectorDevice &device);
 	/** Uses buffer, which isn't freed. */
 	Sector(SectorDevice &device, uint8_t *buffer);
-	~Sector(void);
 	Sector(const Sector&) = delete;
 	Sector& operator=(const Sector&) = delete;
 
-	void set(uint32_t offset, uint8_t value);
-	uint8_t get(uint32_t offset);
+	uint8_t *data() { return m_data; }
+	const uint8_t *data() const { return m_data; }
+
 	md_error_t read(sector_t sector);
 	md_error_t write(sector_t sector);
 };

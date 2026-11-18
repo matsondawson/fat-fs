@@ -10,7 +10,7 @@
 using namespace Mfs;
 
 /** Write a hand made long name entry (one entry, up to 13 ASCII characters). */
-static void addRawLongNameEntry(DirectoryListing &dl, const char *longName, const char shortName[11]) {
+static md_error_t addRawLongNameEntry(DirectoryListing &dl, const char *longName, const char shortName[11]) {
 	DirectoryEntryLong entry;
 	memset(&entry, 0, sizeof(entry));
 	uint16_t chars[13];
@@ -24,7 +24,7 @@ static void addRawLongNameEntry(DirectoryListing &dl, const char *longName, cons
 	memcpy(entry.LDIR_Name3, chars + 11, 4);
 	entry.LDIR_Attr = ATTR_LONG_NAME;
 	entry.LDIR_Chksum = Lfn::shortNameChecksum((const uint8_t*)shortName);
-	dl.addEntry(*(const DirectoryEntry*)&entry);
+	return dl.addEntry(*reinterpret_cast<const DirectoryEntry*>(&entry));
 }
 
 static void test_checksum() {
@@ -36,21 +36,22 @@ static void test_remove_deletes_long_name_entries() {
 	// Applies with and without long name support: a file created elsewhere with a
 	// long name must not leave orphaned long name entries when deleted.
 	Volume v;
-	CHECK_OK();
+	CHECK_OK(v.error);
 	{
-		DirectoryListing dl(*v.fat, "/");
-		addRawLongNameEntry(dl, "Hello.txt", "HELLO   TXT");
+		DirectoryListing dl(*v.fat);
+		CHECK_OK(dl.open("/"));
+		CHECK_OK(addRawLongNameEntry(dl, "Hello.txt", "HELLO   TXT"));
 		DirectoryEntry entry;
 		memset(&entry, 0, sizeof(entry));
 		memcpy(entry.DIR_Name, "HELLO   TXT", 11);
 		entry.DIR_Attr = ATTR_ARCHIVE;
-		dl.addEntry(entry);
-		CHECK_OK();
+		CHECK_OK(dl.addEntry(entry));
 	}
 	CHECK_EQ(countUsedSlots(*v.fat, "/"), 2);
 	CHECK_EQ(countEntries(*v.fat, "/"), 1);
 	{
-		DirectoryListing dl(*v.fat, "/");
+		DirectoryListing dl(*v.fat);
+		CHECK_OK(dl.open("/"));
 		CHECK(dl.next());
 		CHECK_EQ(dl.longNameEntryCount(), 1);
 		char name[32];
@@ -63,28 +64,28 @@ static void test_remove_deletes_long_name_entries() {
 		CHECK(strcmp(name, "HELLO.TXT") == 0);
 #endif
 	}
-	File file(*v.fat, "/", "HELLO.TXT");
-	CHECK_OK();
-	file.remove();
-	CHECK_OK();
+	File file(*v.fat);
+	CHECK_OK(file.open("/", "HELLO.TXT"));
+	CHECK_OK(file.remove());
 	CHECK_EQ(countUsedSlots(*v.fat, "/"), 0);
 }
 
 static void test_orphaned_long_name_entries_are_ignored() {
 	Volume v;
-	CHECK_OK();
+	CHECK_OK(v.error);
 	{
-		DirectoryListing dl(*v.fat, "/");
+		DirectoryListing dl(*v.fat);
+		CHECK_OK(dl.open("/"));
 		// Checksum belongs to a different short name.
-		addRawLongNameEntry(dl, "Wrong.txt", "OTHER   TXT");
+		CHECK_OK(addRawLongNameEntry(dl, "Wrong.txt", "OTHER   TXT"));
 		DirectoryEntry entry;
 		memset(&entry, 0, sizeof(entry));
 		memcpy(entry.DIR_Name, "REAL    TXT", 11);
 		entry.DIR_Attr = ATTR_ARCHIVE;
-		dl.addEntry(entry);
-		CHECK_OK();
+		CHECK_OK(dl.addEntry(entry));
 	}
-	DirectoryListing dl(*v.fat, "/");
+	DirectoryListing dl(*v.fat);
+	CHECK_OK(dl.open("/"));
 	CHECK(dl.next());
 	CHECK(!dl.hasLongName());
 	CHECK_EQ(dl.longNameEntryCount(), 0);
@@ -92,11 +93,12 @@ static void test_orphaned_long_name_entries_are_ignored() {
 	dl.name(name, sizeof(name));
 	CHECK(strcmp(name, "REAL.TXT") == 0);
 	CHECK(!dl.next());
-	File wrong(*v.fat, "/", "Wrong.txt");
+	File wrong(*v.fat);
+	md_error_t error = wrong.open("/", "Wrong.txt");
 #ifdef MFS_LONG_FILE_NAMES
-	CHECK_EQ(mdError, File_fileNotFound);
+	CHECK_EQ(error, File_fileNotFound);
 #else
-	CHECK(mdError != 0);
+	CHECK(error != 0);
 #endif
 }
 
@@ -104,24 +106,23 @@ static void test_orphaned_long_name_entries_are_ignored() {
 
 static void test_long_names_rejected_without_support() {
 	Volume v;
-	CHECK_OK();
-	File file(*v.fat, "/", "My Long File Name.txt", true);
-	CHECK_EQ(mdError, File_invalidName);
-	makeDirectory(*v.fat, "/", "My Directory");
-	CHECK_EQ(mdError, File_invalidName);
+	CHECK_OK(v.error);
+	File file(*v.fat);
+	CHECK_EQ(file.open("/", "My Long File Name.txt", true), File_invalidName);
+	CHECK_EQ(makeDirectory(*v.fat, "/", "My Directory"), File_invalidName);
 	CHECK_EQ(countUsedSlots(*v.fat, "/"), 0);
 	// Lower case 8.3 names are simply stored upper case.
-	writeFile(*v.fat, "/", "readme.txt", 5, 1, 5);
-	CHECK_OK();
-	DirectoryListing dl(*v.fat, "/");
+	CHECK_OK(writeFile(*v.fat, "/", "readme.txt", 5, 1, 5));
+	DirectoryListing dl(*v.fat);
+	CHECK_OK(dl.open("/"));
 	CHECK(dl.find("README.TXT"));
 	CHECK_EQ(countUsedSlots(*v.fat, "/"), 1);
 }
 
 #else
 
-static bool shortNameIs(DirectoryListing &dl, const char shortName[12]) {
-	return memcmp(dl.directoryEntry()->DIR_Name, shortName, 11) == 0;
+static bool shortNameIs(const DirectoryListing &dl, const char shortName[12]) {
+	return memcmp(dl.directoryEntry().DIR_Name, shortName, 11) == 0;
 }
 
 static void test_basis_names() {
@@ -147,7 +148,7 @@ static void test_basis_names() {
 			continue;
 		}
 		CHECK(length > 0);
-		Lfn::makeBasisName(name, (uint32_t)length, out, &lossy);
+		Lfn::makeBasisName(name, (uint32_t)length, out, lossy);
 		if (memcmp(out, cases[i].basis, 11) != 0 || lossy != cases[i].lossy) {
 			printf("    basis of \"%s\" was \"%.11s\" lossy=%d\n", cases[i].longName, out, lossy);
 			CHECK(false);
@@ -204,14 +205,14 @@ static void test_utf8_conversion() {
 
 static void test_create_and_open_long_name() {
 	Volume v;
-	CHECK_OK();
-	writeFile(*v.fat, "/", "My Long File Name.txt", 1000, 3, 300);
-	CHECK_OK();
+	CHECK_OK(v.error);
+	CHECK_OK(writeFile(*v.fat, "/", "My Long File Name.txt", 1000, 3, 300));
 	CHECK(verifyFile(*v.fat, "/", "My Long File Name.txt", 1000, 3, 300));
 	CHECK(verifyFile(*v.fat, "/", "MY LONG FILE NAME.TXT", 1000, 3, 300)); // case insensitive
 	CHECK(verifyFile(*v.fat, "/", "MYLONG~1.TXT", 1000, 3, 300));          // by short alias
 
-	DirectoryListing dl(*v.fat, "/");
+	DirectoryListing dl(*v.fat);
+	CHECK_OK(dl.open("/"));
 	CHECK(dl.next());
 	CHECK(dl.hasLongName());
 	CHECK(shortNameIs(dl, "MYLONG~1TXT"));
@@ -223,34 +224,33 @@ static void test_create_and_open_long_name() {
 	CHECK_EQ(countUsedSlots(*v.fat, "/"), 3);
 
 	// Creating with a differently cased name opens the existing file.
-	File again(*v.fat, "/", "my long file name.TXT", true);
-	CHECK_OK();
+	File again(*v.fat);
+	CHECK_OK(again.open("/", "my long file name.TXT", true));
 	CHECK_EQ(again.length(), 1000);
 	CHECK_EQ(countEntries(*v.fat, "/"), 1);
 
 	// Open once only, whether by long name or short alias
-	File byAlias(*v.fat, "/", "MYLONG~1.TXT");
-	CHECK_EQ(mdError, File_alreadyOpen);
-	mdError = 0;
+	File byAlias(*v.fat);
+	CHECK_EQ(byAlias.open("/", "MYLONG~1.TXT"), File_alreadyOpen);
 }
 
 static void test_alias_numbering() {
 	Volume v;
-	CHECK_OK();
+	CHECK_OK(v.error);
 	char longName[40], expected[12];
 	for (int i = 1; i <= 11; i++) {
 		snprintf(longName, sizeof(longName), "Long File Name %d.txt", i);
-		writeFile(*v.fat, "/", longName, (uint32_t)i, (uint32_t)i, 64);
-		CHECK_OK();
+		CHECK_OK(writeFile(*v.fat, "/", longName, (uint32_t)i, (uint32_t)i, 64));
 	}
 	for (int i = 1; i <= 11; i++) {
 		snprintf(longName, sizeof(longName), "Long File Name %d.txt", i);
-		DirectoryListing dl(*v.fat, "/");
+		DirectoryListing dl(*v.fat);
+		CHECK_OK(dl.open("/"));
 		CHECK(dl.find(longName));
 		if (i < 10) snprintf(expected, sizeof(expected), "LONGFI~%dTXT", i);
 		else snprintf(expected, sizeof(expected), "LONGF~%dTXT", i);
 		if (!shortNameIs(dl, expected)) {
-			printf("    %s got alias %.11s, expected %s\n", longName, (const char*)dl.directoryEntry()->DIR_Name, expected);
+			printf("    %s got alias %.11s, expected %s\n", longName, (const char*)dl.directoryEntry().DIR_Name, expected);
 			CHECK(false);
 		}
 		CHECK(verifyFile(*v.fat, "/", longName, (uint32_t)i, (uint32_t)i, 64));
@@ -259,10 +259,10 @@ static void test_alias_numbering() {
 
 static void test_lower_case_short_name() {
 	Volume v;
-	CHECK_OK();
-	writeFile(*v.fat, "/", "readme.txt", 10, 1, 10);
-	CHECK_OK();
-	DirectoryListing dl(*v.fat, "/");
+	CHECK_OK(v.error);
+	CHECK_OK(writeFile(*v.fat, "/", "readme.txt", 10, 1, 10));
+	DirectoryListing dl(*v.fat);
+	CHECK_OK(dl.open("/"));
 	CHECK(dl.next());
 	CHECK(shortNameIs(dl, "README  TXT")); // no numeric tail needed
 	CHECK(dl.hasLongName());
@@ -270,30 +270,28 @@ static void test_lower_case_short_name() {
 	dl.name(name, sizeof(name));
 	CHECK(strcmp(name, "readme.txt") == 0);
 	// Upper case names need no long name entries.
-	writeFile(*v.fat, "/", "PLAIN.TXT", 10, 1, 10);
+	CHECK_OK(writeFile(*v.fat, "/", "PLAIN.TXT", 10, 1, 10));
 	CHECK_EQ(countUsedSlots(*v.fat, "/"), 3);
 	// Both names refer to the same file.
-	File same(*v.fat, "/", "README.TXT", true);
-	CHECK_OK();
+	File same(*v.fat);
+	CHECK_OK(same.open("/", "README.TXT", true));
 	CHECK_EQ(same.length(), 10);
 	CHECK_EQ(countEntries(*v.fat, "/"), 2);
 }
 
 static void test_unicode_names() {
 	Volume v;
-	CHECK_OK();
+	CHECK_OK(v.error);
 	const char *dirName = "\xF0\x9F\x93\x81 Fotos";     // "📁 Fotos"
 	const char *fileName = "caf\xC3\xA9 \xE2\x98\x95.txt"; // "café ☕.txt"
-	makeDirectory(*v.fat, "/", dirName);
-	CHECK_OK();
+	CHECK_OK(makeDirectory(*v.fat, "/", dirName));
 	char path[64];
 	snprintf(path, sizeof(path), "/%s", dirName);
-	writeFile(*v.fat, path, fileName, 77, 9, 77);
-	CHECK_OK();
+	CHECK_OK(writeFile(*v.fat, path, fileName, 77, 9, 77));
 	CHECK(verifyFile(*v.fat, path, fileName, 77, 9, 77));
 
-	DirectoryListing dl(*v.fat, path);
-	CHECK_OK();
+	DirectoryListing dl(*v.fat);
+	CHECK_OK(dl.open(path));
 	char name[64];
 	bool found = false;
 	while (dl.next()) {
@@ -305,14 +303,14 @@ static void test_unicode_names() {
 
 static void test_name_lengths() {
 	Volume v;
-	CHECK_OK();
+	CHECK_OK(v.error);
 	char name[300];
 	memset(name, 'n', 255);
 	name[255] = 0;
-	writeFile(*v.fat, "/", name, 5, 1, 5); // the longest allowed: 20 entries
-	CHECK_OK();
+	CHECK_OK(writeFile(*v.fat, "/", name, 5, 1, 5)); // the longest allowed: 20 entries
 	CHECK(verifyFile(*v.fat, "/", name, 5, 1, 5));
-	DirectoryListing dl(*v.fat, "/");
+	DirectoryListing dl(*v.fat);
+	CHECK_OK(dl.open("/"));
 	CHECK(dl.find(name));
 	CHECK_EQ(dl.longNameEntryCount(), 20);
 	char back[300];
@@ -321,45 +319,43 @@ static void test_name_lengths() {
 
 	memset(name, 'n', 256);
 	name[256] = 0;
-	File tooLong(*v.fat, "/", name, true);
-	CHECK_EQ(mdError, File_invalidName);
+	File tooLong(*v.fat);
+	CHECK_EQ(tooLong.open("/", name, true), File_invalidName);
 
 	// Trailing periods and spaces are ignored.
-	writeFile(*v.fat, "/", "trailing. . ", 3, 2, 3);
-	CHECK_OK();
+	CHECK_OK(writeFile(*v.fat, "/", "trailing. . ", 3, 2, 3));
 	CHECK(verifyFile(*v.fat, "/", "trailing", 3, 2, 3));
 }
 
 static void test_invalid_long_names() {
 	Volume v;
-	CHECK_OK();
+	CHECK_OK(v.error);
 	static const char *invalid[] = { "a:b.txt", "what?.txt", "star*.txt", "pipe|.txt", "quote\".txt",
 	                                 "less<.txt", "back\\slash.txt", ".", "..", "", "   " };
 	for (unsigned i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
-		File file(*v.fat, "/", invalid[i], true);
-		if (mdError != File_invalidName) {
-			printf("    \"%s\": error %lu\n", invalid[i], (unsigned long)mdError);
+		File file(*v.fat);
+		md_error_t error = file.open("/", invalid[i], true);
+		if (error != File_invalidName) {
+			printf("    \"%s\": error %lu\n", invalid[i], static_cast<unsigned long>(error));
 			CHECK(false);
 		}
 	}
 	CHECK_EQ(countUsedSlots(*v.fat, "/"), 0);
 	// Characters valid in long names but not in short ones are fine.
-	writeFile(*v.fat, "/", "a+b=c [1], d;e.txt", 4, 1, 4);
-	CHECK_OK();
+	CHECK_OK(writeFile(*v.fat, "/", "a+b=c [1], d;e.txt", 4, 1, 4));
 	CHECK(verifyFile(*v.fat, "/", "a+b=c [1], d;e.txt", 4, 1, 4));
 }
 
 static void test_runs_span_clusters_and_remove() {
 	Volume v;
-	CHECK_OK();
+	CHECK_OK(v.error);
 	// 43 character names take 4 long entries + 1 short = 5 slots; with 16 slots per
 	// 512 byte cluster, most runs straddle a cluster boundary.
 	const int count = 13;
 	char name[64];
 	for (int i = 0; i < count; i++) {
 		snprintf(name, sizeof(name), "A rather long file name with number %02d.data", i);
-		writeFile(*v.fat, "/", name, 100 + (uint32_t)i, (uint32_t)i, 64);
-		CHECK_OK();
+		CHECK_OK(writeFile(*v.fat, "/", name, 100 + (uint32_t)i, (uint32_t)i, 64));
 	}
 	CHECK_EQ(countUsedSlots(*v.fat, "/"), count * 5);
 	CHECK_EQ(countEntries(*v.fat, "/"), count);
@@ -370,9 +366,9 @@ static void test_runs_span_clusters_and_remove() {
 	// Remove every other file: all their entries must go.
 	for (int i = 0; i < count; i += 2) {
 		snprintf(name, sizeof(name), "A rather long file name with number %02d.data", i);
-		File file(*v.fat, "/", name);
-		file.remove();
-		CHECK_OK();
+		File file(*v.fat);
+		CHECK_OK(file.open("/", name));
+		CHECK_OK(file.remove());
 	}
 	int remaining = count / 2;
 	CHECK_EQ(countUsedSlots(*v.fat, "/"), remaining * 5);
@@ -382,33 +378,32 @@ static void test_runs_span_clusters_and_remove() {
 		CHECK(verifyFile(*v.fat, "/", name, 100 + (uint32_t)i, (uint32_t)i, 64));
 	}
 	// New names reuse the freed runs instead of growing the directory.
-	uint32_t freeBefore = v.fat->countFreeClusters();
+	uint32_t freeBefore;
+	CHECK_OK(v.fat->countFreeClusters(freeBefore));
 	for (int i = 0; i < count; i += 2) {
 		snprintf(name, sizeof(name), "Replacement file with a long name %02d", i);
-		File file(*v.fat, "/", name, true);
-		CHECK_OK();
+		File file(*v.fat);
+		CHECK_OK(file.open("/", name, true));
 	}
-	CHECK_EQ(v.fat->countFreeClusters(), freeBefore);
+	uint32_t freeAfter;
+	CHECK_OK(v.fat->countFreeClusters(freeAfter));
+	CHECK_EQ(freeAfter, freeBefore);
 	CHECK_EQ(countEntries(*v.fat, "/"), count);
 }
 
 static void test_long_directory_paths() {
 	Volume v;
-	CHECK_OK();
-	makeDirectory(*v.fat, "/", "My Projects");
-	CHECK_OK();
-	makeDirectory(*v.fat, "/My Projects", "Second Level Directory");
-	CHECK_OK();
-	makeDirectory(*v.fat, "/", "my projects");
-	CHECK_EQ(mdError, File_alreadyExists);
-	writeFile(*v.fat, "/My Projects/Second Level Directory", "Read Me First.txt", 2000, 5, 700);
-	CHECK_OK();
+	CHECK_OK(v.error);
+	CHECK_OK(makeDirectory(*v.fat, "/", "My Projects"));
+	CHECK_OK(makeDirectory(*v.fat, "/My Projects", "Second Level Directory"));
+	CHECK_EQ(makeDirectory(*v.fat, "/", "my projects"), File_alreadyExists);
+	CHECK_OK(writeFile(*v.fat, "/My Projects/Second Level Directory", "Read Me First.txt", 2000, 5, 700));
 	CHECK(verifyFile(*v.fat, "/my projects/SECOND LEVEL DIRECTORY", "read me first.txt", 2000, 5, 700));
 	CHECK(verifyFile(*v.fat, "/MYPROJ~1/SECOND~1", "README~1.TXT", 2000, 5, 700));
 	CHECK(verifyFile(*v.fat, "/My Projects/Second Level Directory/../Second Level Directory",
 	                 "Read Me First.txt", 2000, 5, 700));
-	DirectoryListing missing(*v.fat, "/My Projects/Nope");
-	CHECK_EQ(mdError, DirectoryListing_directoryNotFound);
+	DirectoryListing missing(*v.fat);
+	CHECK_EQ(missing.open("/My Projects/Nope"), DirectoryListing_directoryNotFound);
 }
 
 #endif

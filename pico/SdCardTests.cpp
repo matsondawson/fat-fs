@@ -3,7 +3,7 @@
 #include "net/mdawson/filesystem/CachedSectorDevice.h"
 #include "net/mdawson/filesystem/Fat.h"
 #include "net/mdawson/filesystem/File.h"
-#include "net/mdawson/filesystem/GlobalError.h"
+#include "net/mdawson/filesystem/Error.h"
 #include "net/mdawson/filesystem/Partition.h"
 
 #include "pico/time.h"
@@ -61,9 +61,8 @@ const uint32_t READ_LIMIT = 1024 * 1024;
 // Reads the file, up to limit bytes, returning their hash and how long it took
 bool readFile(Fat &fat, const char *name, uint32_t limit, uint32_t &h, int64_t &us) {
 	static uint8_t buffer[4096];
-	mdError = 0;
-	File file(fat, "/", name);
-	if (mdError || !file.isOpen()) {
+	File file(fat);
+	if (file.open("/", name)) {
 		return false;
 	}
 	absolute_time_t start = get_absolute_time();
@@ -71,8 +70,8 @@ bool readFile(Fat &fat, const char *name, uint32_t limit, uint32_t &h, int64_t &
 	uint32_t total = 0;
 	while (total < limit) {
 		uint32_t want = limit - total < sizeof(buffer) ? limit - total : sizeof(buffer);
-		uint32_t got = file.read(buffer, want);
-		if (mdError) {
+		uint32_t got;
+		if (file.read(buffer, want, got)) {
 			return false;
 		}
 		if (got == 0) {
@@ -95,40 +94,45 @@ void writeTest(Fat &fat) {
 	const uint32_t length = 64 * 1024 + 123;
 	static uint8_t buffer[1024];
 
-	mdError = 0;
 	{
-		File file(fat, "/", name, true);
-		check(!mdError && file.isOpen(), "write: create FATTEST.TMP");
-		if (mdError) {
+		File file(fat);
+		md_error_t error = file.open("/", name, true);
+		check(!error && file.isOpen(), "write: create FATTEST.TMP");
+		if (error) {
 			return;
 		}
-		file.seek(0);
-		file.truncate();
+		error = file.seek(0);
+		if (!error) {
+			error = file.truncate();
+		}
 		absolute_time_t start = get_absolute_time();
-		for (uint32_t done = 0; done < length && !mdError;) {
+		for (uint32_t done = 0; done < length && !error;) {
 			uint32_t n = length - done < sizeof(buffer) ? length - done : sizeof(buffer);
 			for (uint32_t i = 0; i < n; i++) {
 				buffer[i] = patternByte(done + i);
 			}
-			file.write(buffer, n);
+			error = file.write(buffer, n);
 			done += n;
 		}
-		file.flush();
+		if (!error) {
+			error = file.flush();
+		}
 		int64_t us = absolute_time_diff_us(start, get_absolute_time());
-		check(!mdError && file.length() == length, "write: write 64 KB and flush");
-		if (!mdError && us > 0) {
+		check(!error && file.length() == length, "write: write 64 KB and flush");
+		if (error) {
+			printf("    error %lu\n", static_cast<unsigned long>(error));
+		} else if (us > 0) {
 			printf("    %lu bytes in %lld ms, %lu KB/s\n", (unsigned long)length, (long long)(us / 1000),
 			       (unsigned long)((uint64_t)length * 1000000 / us / 1024));
 		}
 	}
 
-	mdError = 0;
 	{
-		File file(fat, "/", name);
-		bool ok = !mdError && file.isOpen() && file.length() == length;
+		File file(fat);
+		bool ok = file.open("/", name) == 0 && file.length() == length;
 		for (uint32_t done = 0; ok && done < length;) {
-			uint32_t got = file.read(buffer, sizeof(buffer));
-			if (mdError || got == 0) {
+			uint32_t got;
+			if (file.read(buffer, sizeof(buffer), got) || got == 0) {
 				ok = false;
 				break;
 			}
@@ -141,15 +145,11 @@ void writeTest(Fat &fat) {
 			done += got;
 		}
 		check(ok, "write: read back matches");
-		mdError = 0;
-		file.remove();
-		check(!mdError, "write: delete FATTEST.TMP");
+		check(file.remove() == 0, "write: delete FATTEST.TMP");
 	}
 
-	mdError = 0;
-	File gone(fat, "/", name);
-	check(mdError == File_fileNotFound, "write: FATTEST.TMP gone");
-	mdError = 0;
+	File gone(fat);
+	check(gone.open("/", name) == File_fileNotFound, "write: FATTEST.TMP gone");
 }
 
 // Sector hashes from reading one sector at a time, each in its own stream
@@ -290,30 +290,34 @@ int runSdCardTests(PicoSdCard &card, bool write) {
 
 	// A partition table, as cards come formatted, or a volume across the whole card
 	WriteGuard guard(card, write);
-	mdError = 0;
-	Partition partition(guard, Partition::primary(0));
-	Partition whole(guard, Partition::WHOLE_DEVICE);
-	mdError = 0;
+	Partition partition(guard);
+	Partition whole(guard);
 	Fat fat(partition);
+	Fat wholeFat(whole);
 	Fat *mounted = &fat;
-	Fat *fallback = 0;
-	if (mdError) {
-		mdError = 0;
-		fallback = new Fat(whole);
-		mounted = fallback;
+	bool onWholeCard = false;
+	error = partition.open(Partition::primary(0));
+	if (!error) {
+		error = fat.mount();
 	}
-	check(!mdError, "mount FAT32 volume");
-	if (mdError) {
-		printf("    mdError %lu: is the card FAT32?\n", (unsigned long)mdError);
-		delete fallback;
-		mdError = 0;
+	if (error) {
+		onWholeCard = true;
+		mounted = &wholeFat;
+		error = whole.open(Partition::WHOLE_DEVICE);
+		if (!error) {
+			error = wholeFat.mount();
+		}
+	}
+	check(!error, "mount FAT32 volume");
+	if (error) {
+		printf("    error %lu: is the card FAT32?\n", static_cast<unsigned long>(error));
 		return g_failures;
 	}
 
 	{
 		// Sectors well into the data region, likely file contents: the volume's
 		// first data sector, from its boot sector, plus 1000
-		sector_t volume = fallback ? 0 : partition.getSectorOffset();
+		sector_t volume = onWholeCard ? 0 : partition.getSectorOffset();
 		sector_t start = volume;
 		if (card.read(sector, volume) == 0) {
 			uint32_t reserved = sector[14] | sector[15] << 8;
@@ -334,22 +338,25 @@ int runSdCardTests(PicoSdCard &card, bool write) {
 	char firstFile[256] = "";
 	uint32_t firstLength = 0;
 	{
-		mdError = 0;
-		DirectoryListing listing(*mounted, "/");
+		DirectoryListing listing(*mounted);
+		error = listing.open("/");
 		uint32_t entries = 0;
-		while (!mdError && listing.next()) {
+		while (!error && listing.next()) {
 			char name[256];
 			listing.name(name, sizeof(name));
-			DirectoryEntry *entry = listing.directoryEntry();
-			bool directory = (entry->DIR_Attr & ATTR_DIRECTORY) != 0;
-			printf("    %s%s  %lu\n", name, directory ? "/" : "", (unsigned long)entry->DIR_FileSize);
-			if (!directory && !firstFile[0] && entry->DIR_FileSize > 0) {
+			const DirectoryEntry &entry = listing.directoryEntry();
+			bool directory = (entry.DIR_Attr & ATTR_DIRECTORY) != 0;
+			printf("    %s%s  %lu\n", name, directory ? "/" : "", (unsigned long)entry.DIR_FileSize);
+			if (!directory && !firstFile[0] && entry.DIR_FileSize > 0) {
 				strncpy(firstFile, name, sizeof(firstFile) - 1);
-				firstLength = entry->DIR_FileSize;
+				firstLength = entry.DIR_FileSize;
 			}
 			entries++;
 		}
-		check(!mdError, "list root directory");
+		if (!error) {
+			error = listing.error();
+		}
+		check(!error, "list root directory");
 		printf("    %lu entries\n", (unsigned long)entries);
 	}
 
@@ -368,12 +375,12 @@ int runSdCardTests(PicoSdCard &card, bool write) {
 		// The same, through a cache reading ahead
 		{
 			CachedSectorDevice cache(guard, 4, false, true);
-			Partition cachedPartition(cache, fallback ? Partition::WHOLE_DEVICE : Partition::primary(0));
-			mdError = 0;
+			Partition cachedPartition(cache);
 			Fat cachedFat(cachedPartition);
 			uint32_t h3 = 0;
 			int64_t us3 = 0;
-			bool ok3 = !mdError && readFile(cachedFat, firstFile, limit, h3, us3);
+			bool ok3 = cachedPartition.open(onWholeCard ? Partition::WHOLE_DEVICE : Partition::primary(0)) == 0 &&
+			           cachedFat.mount() == 0 && readFile(cachedFat, firstFile, limit, h3, us3);
 			check(ok1 && ok3 && h3 == h1, "read first file through a read ahead cache, same data");
 			if (ok3 && us3 > 0) {
 				const CachedSectorDevice::Stats &stats = cache.getStats();
@@ -393,8 +400,6 @@ int runSdCardTests(PicoSdCard &card, bool write) {
 	}
 
 	mounted->flush();
-	delete fallback;
-	mdError = 0;
 	if (!write) {
 		check(guard.blockedWrites() == 0, "read only run tried no writes");
 	}

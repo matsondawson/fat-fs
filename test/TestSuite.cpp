@@ -63,10 +63,10 @@ int runFatTests(const char *filter, uint32_t ramDiskSectors) {
 
 #ifdef MFS_FAT12_16
 	// The same tests on FAT16 and FAT12 volumes, directly and through a write back cache
-	g_config.format = Format_FAT16;
+	g_config.format = FatFormat::FAT16;
 	failed += runGroups("fat16", filter);
 	failed += TestFramework::run(FAT12_16_TESTS, FAT12_16_TEST_COUNT, filter, "fat16");
-	g_config.format = Format_FAT12;
+	g_config.format = FatFormat::FAT12;
 	failed += runGroups("fat12", filter);
 	failed += TestFramework::run(FAT12_16_TESTS, FAT12_16_TEST_COUNT, filter, "fat12");
 #ifdef MFS_BLOCK_CACHE
@@ -74,7 +74,7 @@ int runFatTests(const char *filter, uint32_t ramDiskSectors) {
 	failed += runGroups("fat12-cache-2-slot-write-back", filter);
 	g_config.cacheSlots = 0;
 #endif
-	g_config.format = Format_FAT32;
+	g_config.format = FatFormat::FAT32;
 #endif
 
 	printf("\n==== %s: %d failed test(s) ====\n", failed ? "FAILED" : "ALL PASSED", failed);

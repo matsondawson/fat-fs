@@ -1,6 +1,6 @@
 #include "CountingSectorDevice.h"
 
-#include "net/mdawson/filesystem/GlobalError.h"
+#include "net/mdawson/filesystem/Error.h"
 
 CountingSectorDevice::CountingSectorDevice(SectorDevice &device)
 	: device(&device), failReadSector(NO_SECTOR), failWriteSector(NO_SECTOR) {

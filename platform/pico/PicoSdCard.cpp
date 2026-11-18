@@ -1,6 +1,6 @@
 #include "PicoSdCard.h"
 
-#include "net/mdawson/filesystem/GlobalError.h"
+#include "net/mdawson/filesystem/Error.h"
 
 #include "hardware/dma.h"
 #include "hardware/gpio.h"
@@ -12,16 +12,16 @@ MFS_NAMESPACE_BEGIN
 
 namespace {
 
-const uint8_t CMD0_GO_IDLE = 0;
-const uint8_t CMD8_SEND_IF_COND = 8;
-const uint8_t CMD9_SEND_CSD = 9;
-const uint8_t CMD12_STOP_TRANSMISSION = 12;
-const uint8_t CMD13_SEND_STATUS = 13;
-const uint8_t CMD16_SET_BLOCKLEN = 16;
-const uint8_t CMD18_READ_MULTIPLE_BLOCK = 18;
-const uint8_t CMD24_WRITE_BLOCK = 24;
-const uint8_t CMD55_APP_CMD = 55;
-const uint8_t CMD58_READ_OCR = 58;
+constexpr uint8_t CMD0_GO_IDLE = 0;
+constexpr uint8_t CMD8_SEND_IF_COND = 8;
+constexpr uint8_t CMD9_SEND_CSD = 9;
+constexpr uint8_t CMD12_STOP_TRANSMISSION = 12;
+constexpr uint8_t CMD13_SEND_STATUS = 13;
+constexpr uint8_t CMD16_SET_BLOCKLEN = 16;
+constexpr uint8_t CMD18_READ_MULTIPLE_BLOCK = 18;
+constexpr uint8_t CMD24_WRITE_BLOCK = 24;
+constexpr uint8_t CMD55_APP_CMD = 55;
+constexpr uint8_t CMD58_READ_OCR = 58;
 const uint8_t ACMD41_SEND_OP_COND = 41;
 
 const uint8_t R1_IDLE = 0x01;
@@ -90,8 +90,8 @@ void PicoSdCard::setDmaChannels(int rx, int tx) {
 
 void PicoSdCard::releaseChannels() {
 	if (m_claimedChannels) {
-		dma_channel_unclaim((uint)m_rxChannel);
-		dma_channel_unclaim((uint)m_txChannel);
+		dma_channel_unclaim(static_cast<uint>(m_rxChannel));
+		dma_channel_unclaim(static_cast<uint>(m_txChannel));
 	}
 	m_claimedChannels = false;
 	m_rxChannel = -1;
@@ -107,7 +107,7 @@ bool PicoSdCard::isCardPresent() const {
 	if (m_detectPin < 0) {
 		return true;
 	}
-	return gpio_get((uint)m_detectPin) != m_detectActiveLow;
+	return gpio_get(static_cast<uint>(m_detectPin)) != m_detectActiveLow;
 }
 
 md_error_t PicoSdCard::fail(md_error_t error, const char *why) {
@@ -152,8 +152,8 @@ uint8_t PicoSdCard::command(uint8_t index, uint32_t argument) {
 	// Only these two are CRC checked until CRC checking is turned on, which it never is
 	uint8_t crc = index == CMD0_GO_IDLE ? 0x95 : index == CMD8_SEND_IF_COND ? 0x87 : 0x01;
 	uint8_t frame[6] = {
-		(uint8_t)(0x40 | index),
-		(uint8_t)(argument >> 24), (uint8_t)(argument >> 16), (uint8_t)(argument >> 8), (uint8_t)argument,
+		static_cast<uint8_t>(0x40 | index),
+		static_cast<uint8_t>(argument >> 24), static_cast<uint8_t>(argument >> 16), static_cast<uint8_t>(argument >> 8), static_cast<uint8_t>(argument),
 		crc
 	};
 	spi_write_blocking(m_spi, frame, sizeof(frame));
@@ -202,18 +202,18 @@ bool PicoSdCard::readCapacity() {
 	case 0: {
 		// CSD version 1: (C_SIZE + 1) * 2^(C_SIZE_MULT + 2) blocks of 2^READ_BL_LEN bytes
 		uint32_t readBlLen = csd[5] & 0x0F;
-		uint32_t cSize = ((uint32_t)(csd[6] & 0x03) << 10) | ((uint32_t)csd[7] << 2) | (csd[8] >> 6);
+		uint32_t cSize = (static_cast<uint32_t>(csd[6] & 0x03) << 10) | (static_cast<uint32_t>(csd[7]) << 2) | (csd[8] >> 6);
 		uint32_t cSizeMult = ((csd[9] & 0x03) << 1) | (csd[10] >> 7);
-		uint64_t bytes = (uint64_t)(cSize + 1) << (cSizeMult + 2 + readBlLen);
-		m_sectorCount = (sector_t)(bytes / 512);
+		uint64_t bytes = static_cast<uint64_t>(cSize + 1) << (cSizeMult + 2 + readBlLen);
+		m_sectorCount = static_cast<sector_t>(bytes / 512);
 		return true;
 	}
 	case 1: {
 		// CSD version 2 (SDHC/SDXC): (C_SIZE + 1) * 512 KB
-		uint32_t cSize = ((uint32_t)(csd[7] & 0x3F) << 16) | ((uint32_t)csd[8] << 8) | csd[9];
-		uint64_t sectors = (uint64_t)(cSize + 1) * 1024;
+		uint32_t cSize = (static_cast<uint32_t>(csd[7] & 0x3F) << 16) | (static_cast<uint32_t>(csd[8]) << 8) | csd[9];
+		uint64_t sectors = static_cast<uint64_t>(cSize + 1) * 1024;
 		// sector_t is 32 bits, so the most it can reach is 2 TB
-		m_sectorCount = sectors > 0xFFFFFFFFu ? 0xFFFFFFFFu : (sector_t)sectors;
+		m_sectorCount = sectors > 0xFFFFFFFFu ? 0xFFFFFFFFu : static_cast<sector_t>(sectors);
 		return true;
 	}
 	default:
@@ -249,12 +249,12 @@ md_error_t PicoSdCard::begin() {
 	}
 
 	if (m_detectPin >= 0) {
-		gpio_init((uint)m_detectPin);
-		gpio_set_dir((uint)m_detectPin, GPIO_IN);
+		gpio_init(static_cast<uint>(m_detectPin));
+		gpio_set_dir(static_cast<uint>(m_detectPin), GPIO_IN);
 		if (m_detectActiveLow) {
-			gpio_pull_up((uint)m_detectPin);
+			gpio_pull_up(static_cast<uint>(m_detectPin));
 		} else {
-			gpio_pull_down((uint)m_detectPin);
+			gpio_pull_down(static_cast<uint>(m_detectPin));
 		}
 		// Let the pull settle before reading it
 		sleep_us(10);
@@ -355,7 +355,7 @@ md_error_t PicoSdCard::begin() {
 			m_txChannel = tx;
 			m_claimedChannels = true;
 		} else if (rx >= 0) {
-			dma_channel_unclaim((uint)rx);
+			dma_channel_unclaim(static_cast<uint>(rx));
 		}
 	}
 
@@ -435,26 +435,26 @@ void PicoSdCard::startReadAhead() {
 		m_pendingToken = token;
 		return;
 	}
-	dma_channel_config rx = dma_channel_get_default_config((uint)m_rxChannel);
+	dma_channel_config rx = dma_channel_get_default_config(static_cast<uint>(m_rxChannel));
 	channel_config_set_transfer_data_size(&rx, DMA_SIZE_8);
 	channel_config_set_read_increment(&rx, false);
 	channel_config_set_write_increment(&rx, true);
 	channel_config_set_dreq(&rx, spi_get_dreq(m_spi, false));
-	dma_channel_configure((uint)m_rxChannel, &rx, m_readAhead, &spi_get_hw(m_spi)->dr, BLOCK_AND_CRC, false);
-	dma_channel_config tx = dma_channel_get_default_config((uint)m_txChannel);
+	dma_channel_configure(static_cast<uint>(m_rxChannel), &rx, m_readAhead, &spi_get_hw(m_spi)->dr, BLOCK_AND_CRC, false);
+	dma_channel_config tx = dma_channel_get_default_config(static_cast<uint>(m_txChannel));
 	channel_config_set_transfer_data_size(&tx, DMA_SIZE_8);
 	channel_config_set_read_increment(&tx, false);
 	channel_config_set_write_increment(&tx, false);
 	channel_config_set_dreq(&tx, spi_get_dreq(m_spi, true));
-	dma_channel_configure((uint)m_txChannel, &tx, &spi_get_hw(m_spi)->dr, &s_ones, BLOCK_AND_CRC, false);
+	dma_channel_configure(static_cast<uint>(m_txChannel), &tx, &spi_get_hw(m_spi)->dr, &s_ones, BLOCK_AND_CRC, false);
 	dma_start_channel_mask((1u << m_rxChannel) | (1u << m_txChannel));
 	m_readingAhead = true;
 }
 
 // Waits for the read ahead's DMA, which leaves the stream at the end of a block
 void PicoSdCard::waitReadAhead() {
-	dma_channel_wait_for_finish_blocking((uint)m_txChannel);
-	dma_channel_wait_for_finish_blocking((uint)m_rxChannel);
+	dma_channel_wait_for_finish_blocking(static_cast<uint>(m_txChannel));
+	dma_channel_wait_for_finish_blocking(static_cast<uint>(m_rxChannel));
 	// The last byte may still be shifting
 	while (spi_is_busy(m_spi)) {
 	}

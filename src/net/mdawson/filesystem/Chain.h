@@ -27,26 +27,24 @@ private:
 	cluster_t m_firstCluster;
 	cluster_t m_currentCluster;
 
-	/** Move to the next cluster, allocating one if allowed and needed. */
-	bool advance(bool allocate);
+	/** Move to the next cluster, allocating one if allowed and needed. moved is false at the end. */
+	md_error_t advance(bool allocate, bool &moved);
 	/** Size of the current cluster (the FAT12/16 fixed root directory is one large one). */
 	uint32_t currentClusterBytes() const;
 
 public:
-	Chain(Fat &fat);
+	explicit Chain(Fat &fat);
 	Chain(const Chain&) = delete;
 	Chain& operator=(const Chain&) = delete;
 
-	void init(const cluster_t firstCluster);
+	void init(cluster_t firstCluster);
 
 	cluster_t firstCluster() const;
 	cluster_t getCluster() const;
 	uint32_t clusterOffset() const;
 
-	/**
-	 * Go to next cluster.  Returns false if there are no more clusters.
-	 */
-	bool nextCluster();
+	/** Go to the next cluster. moved is false if there are no more clusters. */
+	md_error_t nextCluster(bool &moved);
 
 	/** Back to the start of the chain. */
 	void reset();
@@ -55,16 +53,16 @@ public:
 	 * Seek to a byte position. Fails with Chain_seekExceedsChainLength if the chain
 	 * is shorter than position.
 	 */
-	void seek(uint32_t position);
+	md_error_t seek(uint32_t position);
 
 	/**
 	 * Free every cluster after the current one. If the cursor is at position 0 the
 	 * whole chain is freed and the chain becomes empty (firstCluster() == 0).
 	 */
-	void truncate();
+	md_error_t truncate();
 
 	/** Free the whole chain; it becomes empty. */
-	void freeAll();
+	md_error_t freeAll();
 
 	/**
 	 * Get current byte position in chain.
@@ -72,10 +70,13 @@ public:
 	uint32_t position() const;
 
 	/** Write at the cursor, extending the chain as needed. */
-	void write(const uint8_t *data, uint32_t bytesToWrite);
+	md_error_t write(const uint8_t *data, uint32_t bytesToWrite);
 
-	/** Read at the cursor; stops at the end of the chain. @return bytes read. */
-	uint32_t read(uint8_t *data, uint32_t bytesToRead);
+	/**
+	 * Read at the cursor; stops at the end of the chain. bytesRead is set even
+	 * when an error stops the read part way.
+	 */
+	md_error_t read(uint8_t *data, uint32_t bytesToRead, uint32_t &bytesRead);
 };
 
 MFS_NAMESPACE_END

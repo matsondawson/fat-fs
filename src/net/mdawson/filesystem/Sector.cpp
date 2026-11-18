@@ -1,47 +1,21 @@
 #include "Sector.h"
 
-#include "net/mdawson/filesystem/GlobalError.h"
-
 MFS_NAMESPACE_BEGIN
 
 Sector::Sector(SectorDevice &sectorDevice)
-	: m_sector((sector_t)-1), m_sectorDevice(&sectorDevice), m_ownsData(true), m_data(new uint8_t[SECTOR_SIZE]) {
+	: m_sectorDevice(&sectorDevice), m_owned(new uint8_t[SECTOR_SIZE]), m_data(m_owned.get()) {
 }
 
 Sector::Sector(SectorDevice &sectorDevice, uint8_t *buffer)
-	: m_sector((sector_t)-1), m_sectorDevice(&sectorDevice), m_ownsData(false), m_data(buffer) {
-}
-
-Sector::~Sector(void) {
-	if (m_ownsData) {
-		delete[] m_data;
-	}
-}
-
-void Sector::set(uint32_t offset, uint8_t value) {
-	if (offset >= SECTOR_SIZE) {
-		mdError = Sector_indexOutOfRange;
-		return;
-	}
-	m_data[offset] = value;
-}
-
-uint8_t Sector::get(uint32_t offset) {
-	if (offset >= SECTOR_SIZE) {
-		mdError = Sector_indexOutOfRange;
-		return 0;
-	}
-	return m_data[offset];
+	: m_sectorDevice(&sectorDevice), m_data(buffer) {
 }
 
 md_error_t Sector::read(sector_t sector) {
-	m_sector = sector;
-	return m_sectorDevice->read(m_data, m_sector);
+	return m_sectorDevice->read(m_data, sector);
 }
 
 md_error_t Sector::write(sector_t sector) {
-	m_sector = sector;
-	return m_sectorDevice->write(m_data, m_sector);
+	return m_sectorDevice->write(m_data, sector);
 }
 
 MFS_NAMESPACE_END

@@ -1,13 +1,16 @@
 #include "Partition.h"
 
 #include "net/mdawson/filesystem/Sector.h"
-#include "net/mdawson/filesystem/GlobalError.h"
+#include "net/mdawson/filesystem/Endian.h"
+#include "net/mdawson/filesystem/Error.h"
+
+#include <string.h>
 
 MFS_NAMESPACE_BEGIN
 
 #pragma pack(1)
 
-typedef struct // Partition entry
+struct PartitionEntry
 {
   // 00h Current State of Partition (00h=Inactive, 80h=Active) 1 Byte
   uint8_t state;
@@ -32,25 +35,20 @@ typedef struct // Partition entry
   
   // 0Ch Number of Sectors in the Partition 1 Double Word
   uint32_t sectorCount;
-} PartitionEntry_t;
-
-typedef struct // Partition table
-{
-  PartitionEntry_t partitions[4];
-  uint16_t bootBlockSignature;
-} PartitionTable_t;
+};
 
 #pragma pack()
 
-md_error_t Partition::decodePartition(uint32_t partition) {
-	// set m_partitionSectorOffset to that of first partition
-	// set m_partitionSectorCount
+static_assert(sizeof(PartitionEntry) == 16, "PartitionEntry must match the on-disk layout");
 
-	PartitionTable_t *partitionTable;
-	
+/** Offsets in the MBR sector. */
+constexpr uint32_t PARTITION_TABLE_OFFSET = 446;
+constexpr uint32_t BOOT_SIGNATURE_OFFSET = 510;
+
+md_error_t Partition::decodePartition(uint32_t partition) {
 	// Found the partition so return OK
-	if (partition==7) return 0;
-	
+	if (partition == WHOLE_DEVICE) return 0;
+
 	Sector partitionSector(*m_sectorDevice);
 	if (md_error_t error = partitionSector.read(m_sectorOffset)) {
 		return error;
@@ -58,67 +56,64 @@ md_error_t Partition::decodePartition(uint32_t partition) {
 
 	// TODO: Have not implemented detection of non-partitioned devices
 	// hacky here, if buffer[0] is 0 then we are at an MBR not a boot sector
-  
+
 	// This is a biggy here, this 0th sector may actually be a Partition record
 	// I determine this by checking end bytes 0x55 and 0xAA, checking for not all
 	// 0's after byte 446.
-  
+
 	// Technically a floppy disk doesn't have this MBR it has a Fat BR
 	// so to be as compatible as possible I try to detect if it's an MBR or FBR
 	// by checking whether there are any Partition records (i.e. not all 0's)
 	// if there are then assume it's an MBR
-  
-	// partition table offset==0x1BE
+
 	// todo confirm is partition table and not Boot block
-	partitionTable = (PartitionTable_t*)(&(partitionSector.m_data)[446]);
-	if (partitionTable->bootBlockSignature == 0xAA55) // correct signature?
+	if (readLe16(partitionSector.data() + BOOT_SIGNATURE_OFFSET) == 0xAA55) // correct signature?
 	{
-		// disk is not referenced from this ...
-		PartitionEntry_t *partitionEntry = &(partitionTable->partitions[partition&3]);
-		if (partitionEntry->type == 0 || partitionEntry->sectorCount == 0) {
+		PartitionEntry entry;
+		memcpy(&entry, partitionSector.data() + PARTITION_TABLE_OFFSET + (partition & 3) * sizeof(PartitionEntry),
+		       sizeof(entry));
+		if (entry.type == 0 || entry.sectorCount == 0) {
 			// Empty slot
 			return Partition_tableInvalid;
 		}
-		m_sectorOffset += partitionEntry->sectorsBetweenMbrAndFirstSector;
-		m_sectorCount = partitionEntry->sectorCount;
-		return decodePartition(partition>>3);
+		m_sectorOffset += entry.sectorsBetweenMbrAndFirstSector;
+		m_sectorCount = entry.sectorCount;
+		return decodePartition(partition >> 3);
 	}
- 
+
 	return Partition_tableInvalid;
 }
 
-Partition::Partition(SectorDevice &sectorDevice, uint32_t partition) {
-	m_sectorDevice = &sectorDevice;
-	m_sectorOffset = 0;
-	// Until a partition table limits it, the whole device is addressable.
-	m_sectorCount = (sector_t)-1;
-
-	mdError = decodePartition(partition);
+Partition::Partition(SectorDevice &sectorDevice)
+	: m_sectorDevice(&sectorDevice), m_sectorOffset(0), m_sectorCount(0), m_open(false) {
 }
 
-
-Partition::~Partition(void) {
+md_error_t Partition::open(uint32_t partition) {
+	m_sectorOffset = 0;
+	// Until a partition table limits it, the whole device is addressable.
+	m_sectorCount = static_cast<sector_t>(-1);
+	md_error_t error = decodePartition(partition);
+	m_open = (error == 0);
+	if (!m_open) m_sectorCount = 0;
+	return error;
 }
 
 md_error_t Partition::read(uint8_t* data, sector_t sector) {
-	if (sector>=m_sectorCount) {
-		return Partition_sectorOutOfRange;
-	}
-
-	return m_sectorDevice->read(data, sector+m_sectorOffset);
+	if (!m_open) return Partition_notOpen;
+	if (sector >= m_sectorCount) return Partition_sectorOutOfRange;
+	return m_sectorDevice->read(data, sector + m_sectorOffset);
 }
 
 md_error_t Partition::write(const uint8_t* data, sector_t sector) {
-	if (sector>=m_sectorCount) {
-		return Partition_sectorOutOfRange;
-	}
-
-	return m_sectorDevice->write(data, sector+m_sectorOffset);
+	if (!m_open) return Partition_notOpen;
+	if (sector >= m_sectorCount) return Partition_sectorOutOfRange;
+	return m_sectorDevice->write(data, sector + m_sectorOffset);
 }
 
 uint32_t Partition::getBytesPerSector() const {
 	return m_sectorDevice->getBytesPerSector();
 }
+
 md_error_t Partition::flush() {
 	return m_sectorDevice->flush();
 }

@@ -4,7 +4,9 @@
 /**
  * On-disk FAT boot sector / BIOS parameter block layouts.
  * All multi-byte fields are little-endian; the driver assumes a little-endian CPU
- * (true for x86, ARM Cortex-M including the RP2040/RP2350).
+ * (true for x86, ARM Cortex-M including the RP2040/RP2350). The fields are
+ * unaligned, so a structure is copied out of (or into) a sector buffer with
+ * memcpy, or single fields read with Endian.h, never used through a cast pointer.
  */
 
 #include "net/mdawson/common/Types.h"
@@ -13,7 +15,7 @@ MFS_NAMESPACE_BEGIN
 
 #pragma pack(1)
 
-typedef struct // BPB_FAT16
+struct BPB_FAT16
 {
   /*
     BS_DrvNum	36	1	Int 0x13 drive number (e.g. 0x80). This field supports MS-DOS bootstrap and is set to the INT 0x13 drive number of the media (0x00 for floppy disks, 0x80 for hard disks).
@@ -46,9 +48,9 @@ typedef struct // BPB_FAT16
     BS_FilSysType	54	8	One of the strings “FAT12   ”, “FAT16   ”, or “FAT     ”.  NOTE: Many people think that the string in this field has something to do with the determination of what type of FAT—FAT12, FAT16, or FAT32—that the volume has. This is not true. You will note from its name that this field is not actually part of the BPB. This string is informational only and is not used by Microsoft file system drivers to determine FAT typ,e because it is frequently not set correctly or is not present. See the FAT Type Determination section of this document. This string should be set based on the FAT type though, because some non-Microsoft FAT file system drivers do look at it.
   */
   uint8_t BS_FilSysType[8];
-} BPB_FAT16;
+};
 
-typedef struct
+struct BPB_FAT32
 {
   /*
     BPB_FATSz32	36	4	This field is only defined for FAT32 media and does not exist
@@ -154,9 +156,9 @@ typedef struct
     this field in the FAT12/FAT16 section earlier. This field has nothing to do with FAT type determination.
   */
   uint8_t BS_FilSysType[8];
-} BPB_FAT32;
+};
 
-typedef struct // BPB
+struct BPB
 {
   /** Name / Offset / Bytes / Description **/
   /*
@@ -269,14 +271,14 @@ typedef struct // BPB
     BPB_FAT16 bpb16; 
     BPB_FAT32 bpb32;
   } bpb;
-} BPB_t, *pBPB_t;
+};
 
 #pragma pack()
 
 #pragma pack(1)
 
 /** FAT32 FSInfo sector. */
-typedef struct
+struct FSInfo
 {
   uint32_t FSI_LeadSig;      // 0x41615252
   uint8_t  FSI_Reserved1[480];
@@ -285,16 +287,16 @@ typedef struct
   uint32_t FSI_Nxt_Free;     // 0xFFFFFFFF = unknown
   uint8_t  FSI_Reserved2[12];
   uint32_t FSI_TrailSig;     // 0xAA550000
-} FSInfo_t;
+};
 
 #pragma pack()
 
-const uint32_t FSI_LEAD_SIG = 0x41615252u;
-const uint32_t FSI_STRUC_SIG = 0x61417272u;
-const uint32_t FSI_TRAIL_SIG = 0xAA550000u;
+constexpr uint32_t FSI_LEAD_SIG = 0x41615252u;
+constexpr uint32_t FSI_STRUC_SIG = 0x61417272u;
+constexpr uint32_t FSI_TRAIL_SIG = 0xAA550000u;
 
-static_assert(sizeof(BPB_t) == 90, "BPB_t must match the on-disk layout");
-static_assert(sizeof(FSInfo_t) == 512, "FSInfo_t must be one sector");
+static_assert(sizeof(BPB) == 90, "BPB must match the on-disk layout");
+static_assert(sizeof(FSInfo) == 512, "FSInfo must be one sector");
 
 MFS_NAMESPACE_END
 
