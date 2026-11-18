@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.13)
 
-project(fat VERSION 0.1.0 LANGUAGES C CXX)
+project(fat VERSION 0.1.1 LANGUAGES C CXX)
 
 # Building this directory directly (rather than via add_subdirectory from a
 # firmware project such as pico/) enables the host test harness and tools.
