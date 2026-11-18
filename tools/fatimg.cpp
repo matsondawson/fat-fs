@@ -25,7 +25,7 @@
 #include "net/mdawson/filesystem/Fat.h"
 #include "net/mdawson/filesystem/FatFormat.h"
 #include "net/mdawson/filesystem/File.h"
-#include "net/mdawson/filesystem/GlobalError.h"
+#include "net/mdawson/filesystem/Error.h"
 #include "net/mdawson/filesystem/Partition.h"
 
 #include <errno.h>
@@ -52,8 +52,8 @@ static int usage() {
 	return 2;
 }
 
-static int fail(const char *what) {
-	fprintf(stderr, "fatimg: %s failed (error %lu)\n", what, (unsigned long)mdError);
+static int fail(const char *what, md_error_t error) {
+	fprintf(stderr, "fatimg: %s failed (error %lu)\n", what, static_cast<unsigned long>(error));
 	return 1;
 }
 
@@ -75,13 +75,10 @@ static bool splitPath(const char *path, char *dir, size_t dirSize, const char **
 }
 
 /** Write back the cache (if any) and sync the image file. */
-static bool flushAll(SectorDevice &volume, FileSectorDevice &device) {
-	if (md_error_t error = volume.flush()) {
-		mdError = error;
-		return false;
-	}
+static md_error_t flushAll(SectorDevice &volume, FileSectorDevice &device) {
+	if (md_error_t error = volume.flush()) return error;
 	device.sync();
-	return true;
+	return 0;
 }
 
 int main(int argc, char *argv[]) {
@@ -100,15 +97,15 @@ int main(int argc, char *argv[]) {
 
 	int arg = 1;
 	int partitionIndex = -1;
-	FatFormat_e formatType = Format_FAT32;
+	FatFormat formatType = FatFormat::FAT32;
 	while (arg + 1 < argc && argv[arg][0] == '-') {
 		if (strcmp(argv[arg], "-p") == 0) {
 			partitionIndex = atoi(argv[arg + 1]);
 		} else if (strcmp(argv[arg], "-t") == 0) {
 			int bits = atoi(argv[arg + 1]);
-			if (bits == 12) formatType = Format_FAT12;
-			else if (bits == 16) formatType = Format_FAT16;
-			else if (bits == 32) formatType = Format_FAT32;
+			if (bits == 12) formatType = FatFormat::FAT12;
+			else if (bits == 16) formatType = FatFormat::FAT16;
+			else if (bits == 32) formatType = FatFormat::FAT32;
 			else return usage();
 		} else {
 			return usage();
@@ -148,40 +145,42 @@ int main(int argc, char *argv[]) {
 	SectorDevice &storage = device;
 #endif
 
-	Partition partition(storage, partitionIndex < 0 ? Partition::WHOLE_DEVICE : Partition::primary((uint32_t)partitionIndex));
-	if (mdError) return fail("reading partition table");
+	Partition partition(storage);
+	md_error_t error = partition.open(partitionIndex < 0 ? Partition::WHOLE_DEVICE : Partition::primary((uint32_t)partitionIndex));
+	if (error) return fail("reading partition table", error);
 	sector_t volumeSectors = partitionIndex < 0 ? device.getSectorCount() : partition.getSectorCount();
 
 	if (strcmp(command, "format") == 0) {
-		formatFat(partition, volumeSectors, formatType);
-		if (mdError) return fail("format");
-		if (!flushAll(partition, device)) return fail("flush");
+		if ((error = formatFat(partition, volumeSectors, formatType))) return fail("format", error);
+		if ((error = flushAll(partition, device))) return fail("flush", error);
 		return 0;
 	}
 
 	Fat fat(partition);
-	if (mdError) return fail("mount");
+	if ((error = fat.mount())) return fail("mount", error);
 
 	if (strcmp(command, "info") == 0) {
-		const char *type = fat.getFormat() == Format_FAT12 ? "FAT12" : fat.getFormat() == Format_FAT16 ? "FAT16" : "FAT32";
+		const char *type = fat.getFormat() == FatFormat::FAT12 ? "FAT12" : fat.getFormat() == FatFormat::FAT16 ? "FAT16" : "FAT32";
+		uint32_t freeClusters;
+		if ((error = fat.countFreeClusters(freeClusters))) return fail("info", error);
 		printf("%s, %lu clusters of %lu bytes, %lu free\n", type,
 			(unsigned long)fat.getClusterCount(), (unsigned long)fat.getBytesPerCluster(),
-			(unsigned long)fat.countFreeClusters());
+			(unsigned long)freeClusters);
 		return 0;
 	}
 
 	if (strcmp(command, "ls") == 0) {
-		DirectoryListing dl(fat, remaining > 0 ? argv[arg] : "/");
-		if (mdError) return fail("ls");
+		DirectoryListing dl(fat);
+		if ((error = dl.open(remaining > 0 ? argv[arg] : "/"))) return fail("ls", error);
 		char name[LFN_MAX_LENGTH * 3 + 1];
 		while (dl.next()) {
-			const DirectoryEntry *e = dl.directoryEntry();
+			const DirectoryEntry &e = dl.directoryEntry();
 			dl.name(name, sizeof(name));
 			printf("%s", name);
-			if (e->DIR_Attr & ATTR_DIRECTORY) printf("/\n");
-			else printf("\t%lu\n", (unsigned long)e->DIR_FileSize);
+			if (e.DIR_Attr & ATTR_DIRECTORY) printf("/\n");
+			else printf("\t%lu\n", (unsigned long)e.DIR_FileSize);
 		}
-		return mdError ? fail("ls") : 0;
+		return dl.error() ? fail("ls", dl.error()) : 0;
 	}
 
 	if (remaining < 1) return usage();
@@ -200,12 +199,12 @@ int main(int argc, char *argv[]) {
 				return 1;
 			}
 		}
-		File file(fat, dir, name);
-		if (mdError) return fail("open");
+		File file(fat);
+		if ((error = file.open(dir, name))) return fail("open", error);
 		uint8_t buffer[4096];
 		for (;;) {
-			uint32_t n = file.read(buffer, sizeof(buffer));
-			if (mdError) return fail("read");
+			uint32_t n;
+			if ((error = file.read(buffer, sizeof(buffer), n))) return fail("read", error);
 			if (n == 0) break;
 			fwrite(buffer, 1, n, out);
 		}
@@ -220,34 +219,31 @@ int main(int argc, char *argv[]) {
 			fprintf(stderr, "fatimg: cannot read %s: %s\n", argv[arg], strerror(errno));
 			return 1;
 		}
-		File file(fat, dir, name, true);
-		if (mdError) return fail("create");
-		file.truncate(); // replace existing contents
-		if (mdError) return fail("truncate");
+		File file(fat);
+		if ((error = file.open(dir, name, true))) return fail("create", error);
+		if ((error = file.truncate())) return fail("truncate", error); // replace existing contents
 		uint8_t buffer[4096];
 		size_t n;
 		while ((n = fread(buffer, 1, sizeof(buffer), in)) > 0) {
-			file.write(buffer, (uint32_t)n);
-			if (mdError) return fail("write");
+			if ((error = file.write(buffer, (uint32_t)n))) return fail("write", error);
 		}
 		fclose(in);
-		if (!flushAll(partition, device)) return fail("flush");
+		if ((error = file.close())) return fail("close", error);
+		if ((error = flushAll(partition, device))) return fail("flush", error);
 		return 0;
 	}
 
 	if (strcmp(command, "rm") == 0) {
-		File file(fat, dir, name);
-		if (mdError) return fail("open");
-		file.remove();
-		if (mdError) return fail("rm");
-		if (!flushAll(partition, device)) return fail("flush");
+		File file(fat);
+		if ((error = file.open(dir, name))) return fail("open", error);
+		if ((error = file.remove())) return fail("rm", error);
+		if ((error = flushAll(partition, device))) return fail("flush", error);
 		return 0;
 	}
 
 	if (strcmp(command, "mkdir") == 0) {
-		makeDirectory(fat, dir, name);
-		if (mdError) return fail("mkdir");
-		if (!flushAll(partition, device)) return fail("flush");
+		if ((error = makeDirectory(fat, dir, name))) return fail("mkdir", error);
+		if ((error = flushAll(partition, device))) return fail("flush", error);
 		return 0;
 	}
 

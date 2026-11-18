@@ -268,39 +268,40 @@ static void test_flush_through_partition_and_fat() {
 	MemorySectorDevice ram(VOLUME_SECTORS, g_config.ramDiskSectors);
 	CountingSectorDevice counter(ram);
 	CachedSectorDevice cache(counter, 4);
-	Partition partition(cache, Partition::WHOLE_DEVICE);
-	formatFat32(partition, VOLUME_SECTORS, 1);
-	CHECK_OK();
+	Partition partition(cache);
+	CHECK_OK(partition.open(Partition::WHOLE_DEVICE));
+	CHECK_OK(formatFat32(partition, VOLUME_SECTORS, 1));
 	Fat fat(partition);
-	CHECK_OK();
+	CHECK_OK(fat.mount());
 	{
-		File file(fat, "/", "A.TXT", true);
-		file.write((const uint8_t*)"hello", 5);
-		CHECK_OK();
+		File file(fat);
+		CHECK_OK(file.open("/", "A.TXT", true));
+		CHECK_OK(file.write(reinterpret_cast<const uint8_t*>("hello"), 5));
 		CHECK(cache.getDirtyCount() > 0);
-		file.flush();
-		CHECK_OK();
+		CHECK_OK(file.flush());
 		CHECK_EQ(cache.getDirtyCount(), 0);
 		CHECK(counter.flushes > 0);
 	}
 }
 
-/** Run a typical logging workload on fat and report device reads and writes. */
-static void workload(Fat &fat) {
+/** Run a typical logging workload on fat. @return false if anything failed. */
+static bool workload(Fat &fat) {
 	// Many small appends...
 	{
-		File log(fat, "/", "LOG.TXT", true);
+		File log(fat);
+		if (log.open("/", "LOG.TXT", true)) return false;
 		uint8_t line[24];
 		for (uint32_t i = 0; i < 400; i++) {
 			fillPattern(line, sizeof(line), i * sizeof(line), 5);
-			log.write(line, sizeof(line));
+			if (log.write(line, sizeof(line))) return false;
 		}
+		if (log.close()) return false;
 	}
 	// ...and walking a long cluster chain (a 50KB file, 100 clusters) twice.
-	writeFile(fat, "/", "BIG.BIN", 50000, 6, 700);
-	verifyFile(fat, "/", "BIG.BIN", 50000, 6, 700);
-	verifyFile(fat, "/", "BIG.BIN", 50000, 6, 700);
-	verifyFile(fat, "/", "LOG.TXT", 400 * 24, 5, 100);
+	if (writeFile(fat, "/", "BIG.BIN", 50000, 6, 700)) return false;
+	bool ok = verifyFile(fat, "/", "BIG.BIN", 50000, 6, 700);
+	ok = verifyFile(fat, "/", "BIG.BIN", 50000, 6, 700) && ok;
+	return verifyFile(fat, "/", "LOG.TXT", 400 * 24, 5, 100) && ok;
 }
 
 static void test_cache_reduces_device_io() {
@@ -312,11 +313,11 @@ static void test_cache_reduces_device_io() {
 	{
 		MemorySectorDevice ram(VOLUME_SECTORS, g_config.ramDiskSectors);
 		CountingSectorDevice counter(ram);
-		formatFat32(counter, VOLUME_SECTORS, 1);
+		CHECK_OK(formatFat32(counter, VOLUME_SECTORS, 1));
 		Fat fat(counter);
+		CHECK_OK(fat.mount());
 		counter.resetCounts();
-		workload(fat);
-		CHECK_OK();
+		CHECK(workload(fat));
 		directReads = counter.reads;
 		directWrites = counter.writes;
 	}
@@ -325,12 +326,12 @@ static void test_cache_reduces_device_io() {
 		MemorySectorDevice ram(VOLUME_SECTORS, g_config.ramDiskSectors);
 		CountingSectorDevice counter(ram);
 		CachedSectorDevice cache(counter, MFS_BLOCK_CACHE_DEFAULT_SLOTS);
-		formatFat32(cache, VOLUME_SECTORS, 1);
+		CHECK_OK(formatFat32(cache, VOLUME_SECTORS, 1));
 		Fat fat(cache);
-		cache.flush();
+		CHECK_OK(fat.mount());
+		CHECK_OK(cache.flush());
 		counter.resetCounts();
-		workload(fat);
-		CHECK_OK();
+		CHECK(workload(fat));
 		CHECK_EQ(cache.flush(), 0);
 		cachedReads = counter.reads;
 		cachedWrites = counter.writes;
@@ -351,30 +352,28 @@ static void test_power_loss() {
 	CountingSectorDevice storage(ram);
 	{
 		CachedSectorDevice cache(storage, 4);
-		formatFat32(cache, VOLUME_SECTORS, 1);
-		CHECK_OK();
+		CHECK_OK(formatFat32(cache, VOLUME_SECTORS, 1));
 		Fat fat(cache);
-		CHECK_OK();
+		CHECK_OK(fat.mount());
 
 		// Durable: written and flushed.
-		writeFile(fat, "/", "SAFE.BIN", 3000, 1, 700);
+		CHECK_OK(writeFile(fat, "/", "SAFE.BIN", 3000, 1, 700));
 		{
-			File file(fat, "/", "FLUSHED.TXT", true);
-			file.write((const uint8_t*)"0123456789", 10);
-			file.flush();
-			CHECK_OK();
+			File file(fat);
+			CHECK_OK(file.open("/", "FLUSHED.TXT", true));
+			CHECK_OK(file.write(reinterpret_cast<const uint8_t*>("0123456789"), 10));
+			CHECK_OK(file.flush());
 			// Written after the flush: may or may not survive.
-			file.write((const uint8_t*)"abcdef", 6);
-			CHECK_OK();
+			CHECK_OK(file.write(reinterpret_cast<const uint8_t*>("abcdef"), 6));
 
 			// Not flushed at all.
-			File lost(fat, "/", "LOST.BIN", true);
+			File lost(fat);
+			CHECK_OK(lost.open("/", "LOST.BIN", true));
 			uint8_t buffer[512];
 			for (uint32_t i = 0; i < 8; i++) {
 				fillPattern(buffer, sizeof(buffer), i * 512, 2);
-				lost.write(buffer, sizeof(buffer));
+				CHECK_OK(lost.write(buffer, sizeof(buffer)));
 			}
-			CHECK_OK();
 			CHECK(cache.getDirtyCount() > 0);
 
 			// Power cut: from now on nothing reaches the storage, and whatever was
@@ -383,34 +382,40 @@ static void test_power_loss() {
 			cache.invalidate();
 		}
 	}
-	mdError = 0;
 
 	// After power returns the raw device must still mount...
 	Fat fat(ram);
-	CHECK_OK();
+	CHECK_OK(fat.mount());
 	CHECK(fat.isMounted());
 	// ...everything flushed must be intact...
 	CHECK(verifyFile(fat, "/", "SAFE.BIN", 3000, 1, 700));
 	{
-		File file(fat, "/", "FLUSHED.TXT");
-		CHECK_OK();
+		File file(fat);
+		CHECK_OK(file.open("/", "FLUSHED.TXT"));
 		CHECK(file.length() == 10 || file.length() == 16);
 		uint8_t text[10];
-		CHECK_EQ(file.read(text, 10), 10);
+		uint32_t bytesRead;
+		CHECK_OK(file.read(text, 10, bytesRead));
+		CHECK_EQ(bytesRead, 10);
 		CHECK(memcmp(text, "0123456789", 10) == 0);
 	}
 	// ...and the rest must at least be readable without errors.
 	CHECK(countEntries(fat, "/") >= 2);
 	{
-		File lost(fat, "/", "LOST.BIN");
-		if (lost.isOpen()) {
+		// It may or may not have a directory entry.
+		File lost(fat);
+		md_error_t error = lost.open("/", "LOST.BIN");
+		if (error != File_fileNotFound) {
+			CHECK_OK(error);
 			uint8_t buffer[512];
-			while (lost.read(buffer, sizeof(buffer)) > 0) {}
-			CHECK_OK();
+			uint32_t bytesRead;
+			do {
+				CHECK_OK(lost.read(buffer, sizeof(buffer), bytesRead));
+			} while (bytesRead > 0);
 		}
 	}
-	fat.countFreeClusters();
-	CHECK_OK();
+	uint32_t freeClusters;
+	CHECK_OK(fat.countFreeClusters(freeClusters));
 }
 
 static void fillRam(MemorySectorDevice &ram, sector_t first, sector_t count) {

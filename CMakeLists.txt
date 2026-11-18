@@ -26,7 +26,6 @@ endif()
 option(FAT_LONG_FILE_NAMES "Long file name (VFAT) support (defines MFS_LONG_FILE_NAMES)" OFF)
 option(FAT_BLOCK_CACHE "Include the CachedSectorDevice block cache (defines MFS_BLOCK_CACHE)" ON)
 option(FAT_FAT12_16 "FAT12 and FAT16 volumes as well as FAT32 (defines MFS_FAT12_16)" OFF)
-option(FAT_THREAD_LOCAL_ERROR "Make mdError thread local (defines MFS_THREAD_LOCAL_ERROR)" OFF)
 option(FAT_INSTALL "Generate install rules for the library and its CMake package" ${FAT_IS_TOP_LEVEL})
 
 set(FAT_SOURCES
@@ -35,23 +34,19 @@ set(FAT_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/src/net/mdawson/filesystem/Fat.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/src/net/mdawson/filesystem/FatFormat.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/src/net/mdawson/filesystem/File.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/net/mdawson/filesystem/GlobalError.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/src/net/mdawson/filesystem/LongName.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/src/net/mdawson/filesystem/MemorySectorDevice.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/src/net/mdawson/filesystem/Partition.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/src/net/mdawson/filesystem/Sector.cpp
 )
 
-# fat_library(<target> <long file names ON/OFF> <block cache ON/OFF> <FAT12/16 ON/OFF> [thread local error ON/OFF])
+# fat_library(<target> <long file names ON/OFF> <block cache ON/OFF> <FAT12/16 ON/OFF>)
 function(fat_library target lfn cache fat1216)
   add_library(${target} STATIC ${FAT_SOURCES})
   target_include_directories(${target} PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
   target_compile_features(${target} PUBLIC cxx_std_11)
-  if(ARGC GREATER 4 AND ARGV4)
-    target_compile_definitions(${target} PUBLIC MFS_THREAD_LOCAL_ERROR)
-  endif()
   if(lfn)
     target_compile_definitions(${target} PUBLIC MFS_LONG_FILE_NAMES)
   endif()
@@ -90,7 +85,7 @@ include(GNUInstallDirs)
 # code and supply a SectorDevice for your storage. The real target names start
 # with mfs_ so they don't clash with targets in the project that includes this.
 # ---------------------------------------------------------------------------
-fat_library(mfs_fat ${FAT_LONG_FILE_NAMES} ${FAT_BLOCK_CACHE} ${FAT_FAT12_16} ${FAT_THREAD_LOCAL_ERROR})
+fat_library(mfs_fat ${FAT_LONG_FILE_NAMES} ${FAT_BLOCK_CACHE} ${FAT_FAT12_16})
 set_target_properties(mfs_fat PROPERTIES OUTPUT_NAME fat EXPORT_NAME fat)
 add_library(fat::fat ALIAS mfs_fat)
 
@@ -173,11 +168,10 @@ if(FAT_BUILD_TESTS)
   find_package(Threads REQUIRED)
 
   # Every feature combination is built and tested, whatever the options above say.
-  foreach(variant plain lfn cache lfn_cache fat1216 lfn_cache_fat1216 lfn_cache_fat1216_tls)
+  foreach(variant plain lfn cache lfn_cache fat1216 lfn_cache_fat1216)
     set(lfn OFF)
     set(cache OFF)
     set(fat1216 OFF)
-    set(tls OFF)
     if(variant MATCHES "lfn")
       set(lfn ON)
     endif()
@@ -187,17 +181,11 @@ if(FAT_BUILD_TESTS)
     if(variant MATCHES "fat1216")
       set(fat1216 ON)
     endif()
-    if(variant MATCHES "tls")
-      set(tls ON)
-    endif()
 
-    fat_library(fat_${variant} ${lfn} ${cache} ${fat1216} ${tls})
+    fat_library(fat_${variant} ${lfn} ${cache} ${fat1216})
     fat_testsuite(fat_testsuite_${variant} fat_${variant})
     add_executable(fat_tests_${variant} test/host_main.cpp)
-    target_link_libraries(fat_tests_${variant} PRIVATE fat_testsuite_${variant})
-    if(tls)
-      target_link_libraries(fat_tests_${variant} PRIVATE Threads::Threads)
-    endif()
+    target_link_libraries(fat_tests_${variant} PRIVATE fat_testsuite_${variant} Threads::Threads)
     add_test(NAME unit_${variant} COMMAND fat_tests_${variant})
 
     add_library(fat_posix_${variant} STATIC platform/posix/FileSectorDevice.cpp)

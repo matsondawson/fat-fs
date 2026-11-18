@@ -13,7 +13,8 @@ MFS_NAMESPACE_BEGIN
  *   Partition::WHOLE_DEVICE        - no partition table (e.g. a "superfloppy" SD card)
  *   Partition::primary(n)          - primary partition n (0-3)
  *
- * After construction check mdError for Partition_tableInvalid etc.
+ * Construct it on a device, then open() a partition; reads and writes fail with
+ * Partition_notOpen until open() succeeds.
  */
 class Partition : public SectorDevice
 {
@@ -21,6 +22,7 @@ private:
 	SectorDevice *m_sectorDevice;
 	sector_t m_sectorOffset;
 	sector_t m_sectorCount;
+	bool m_open;
 
 	md_error_t decodePartition(uint32_t partition);
 
@@ -28,13 +30,16 @@ public:
 	static const uint32_t WHOLE_DEVICE = 7;
 	static uint32_t primary(uint32_t index) { return (WHOLE_DEVICE << 3) | (index & 3); }
 
-	Partition(SectorDevice &sectorDevice, uint32_t partition);
-	~Partition();
+	explicit Partition(SectorDevice &sectorDevice);
 
-	virtual md_error_t read(uint8_t* data, sector_t sector);
-	virtual md_error_t write(const uint8_t* data, sector_t sector);
-	virtual uint32_t getBytesPerSector() const;
-	virtual md_error_t flush();
+	/** Select partition (see above). Fails with Partition_tableInvalid or a device error. */
+	md_error_t open(uint32_t partition);
+	bool isOpen() const { return m_open; }
+
+	md_error_t read(uint8_t* data, sector_t sector) override;
+	md_error_t write(const uint8_t* data, sector_t sector) override;
+	uint32_t getBytesPerSector() const override;
+	md_error_t flush() override;
 
 	sector_t getSectorOffset() const { return m_sectorOffset; }
 	sector_t getSectorCount() const { return m_sectorCount; }

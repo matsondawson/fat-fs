@@ -5,7 +5,7 @@
 
 MFS_NAMESPACE_BEGIN
 
-typedef uint32_t sector_t;
+using sector_t = uint32_t;
 
 /**
  * Common class that all block devices must implement (SD card, flash, RAM disk,
@@ -16,7 +16,7 @@ typedef uint32_t sector_t;
 class SectorDevice
 {
 public:
-	virtual ~SectorDevice() {}
+	virtual ~SectorDevice() = default;
 
 	/*******************************************
 	 * Interfaces that need implementing

@@ -21,8 +21,8 @@ public:
 	 * Open an existing image file or block device.
 	 * Check isOpen() afterwards; errno describes any failure.
 	 */
-	FileSectorDevice(const char *path, bool readOnly = false);
-	~FileSectorDevice();
+	explicit FileSectorDevice(const char *path, bool readOnly = false);
+	~FileSectorDevice() override;
 	FileSectorDevice(const FileSectorDevice&) = delete;
 	FileSectorDevice& operator=(const FileSectorDevice&) = delete;
 
@@ -38,9 +38,9 @@ public:
 	/** Flush writes to the underlying storage. */
 	void sync();
 
-	virtual md_error_t read(uint8_t* data, sector_t sector);
-	virtual md_error_t write(const uint8_t* data, sector_t sector);
-	virtual uint32_t getBytesPerSector() const;
+	md_error_t read(uint8_t* data, sector_t sector) override;
+	md_error_t write(const uint8_t* data, sector_t sector) override;
+	uint32_t getBytesPerSector() const override;
 };
 
 MFS_NAMESPACE_END

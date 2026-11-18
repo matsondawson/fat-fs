@@ -9,41 +9,45 @@
 
 using namespace Mfs;
 
+/** Free cluster count, or 0xFFFFFFFF if counting failed. */
+static uint32_t freeClusters(Fat &fat) {
+	uint32_t count;
+	return fat.countFreeClusters(count) ? 0xFFFFFFFFu : count;
+}
+
 /******************************** Tests ********************************/
 
 static void test_format_and_mount() {
 	Volume v;
-	CHECK_OK();
+	CHECK_OK(v.error);
 	CHECK(v.fat->isMounted());
 	CHECK_EQ(v.fat->getFormat(), g_config.format);
 	CHECK_EQ(v.fat->getBytesPerCluster(), CLUSTER_BYTES);
 	switch (g_config.format) {
-	case Format_FAT12: CHECK(v.fat->getClusterCount() < 4085); break;
-	case Format_FAT16: CHECK(v.fat->getClusterCount() >= 4085 && v.fat->getClusterCount() < 65525); break;
+	case FatFormat::FAT12: CHECK(v.fat->getClusterCount() < 4085); break;
+	case FatFormat::FAT16: CHECK(v.fat->getClusterCount() >= 4085 && v.fat->getClusterCount() < 65525); break;
 	default: CHECK(v.fat->getClusterCount() >= 65525); break;
 	}
 	CHECK_EQ(countEntries(*v.fat, "/"), 0);
 	// Everything is free except the FAT32 root directory cluster.
-	CHECK_EQ(v.fat->countFreeClusters(), v.fat->getClusterCount() - rootDirectoryClusters());
+	CHECK_EQ(freeClusters(*v.fat), v.fat->getClusterCount() - rootDirectoryClusters());
 }
 
 static void test_format_rejects_small_volume() {
 	Disk disk(20000);
 	SectorDevice &device = disk.device();
-	formatFat32(device, 20000, 1);
-	CHECK_EQ(mdError, Fat_formatVolumeTooSmall);
-	formatFat32(device, VOLUME_SECTORS, 3);
-	CHECK_EQ(mdError, Fat_formatInvalidClusterSize);
+	CHECK_EQ(formatFat32(device, 20000, 1), Fat_formatVolumeTooSmall);
+	CHECK_EQ(formatFat32(device, VOLUME_SECTORS, 3), Fat_formatInvalidClusterSize);
 }
 
 static void test_mount_unformatted_fails() {
 	Disk disk(VOLUME_SECTORS);
 	Fat fat(disk.device());
-	CHECK(mdError != 0);
+	CHECK(fat.mount() != 0);
 	CHECK(!fat.isMounted());
 
-	File file(fat, "/", "A.TXT", true);
-	CHECK_EQ(mdError, Fat_notMounted);
+	File file(fat);
+	CHECK_EQ(file.open("/", "A.TXT", true), Fat_notMounted);
 	CHECK(!file.isOpen());
 }
 
@@ -70,262 +74,260 @@ static void test_short_names() {
 
 static void test_open_missing_file() {
 	Volume v;
-	CHECK_OK();
-	File file(*v.fat, "/", "MISSING.TXT");
-	CHECK_EQ(mdError, File_fileNotFound);
+	CHECK_OK(v.error);
+	File file(*v.fat);
+	CHECK_EQ(file.open("/", "MISSING.TXT"), File_fileNotFound);
 	CHECK(!file.isOpen());
-	file.write((const uint8_t*)"x", 1);
-	CHECK_EQ(mdError, File_notOpen);
+	CHECK_EQ(file.write((const uint8_t*)"x", 1), File_notOpen);
 
-	File bad(*v.fat, "/", "BAD*NAME.TXT", true);
-	CHECK_EQ(mdError, File_invalidName);
+	File bad(*v.fat);
+	CHECK_EQ(bad.open("/", "BAD*NAME.TXT", true), File_invalidName);
 }
 
 static void test_create_write_read() {
 	Volume v;
-	CHECK_OK();
+	CHECK_OK(v.error);
 	{
-		File file(*v.fat, "/", "HELLO.TXT", true);
-		CHECK_OK();
+		File file(*v.fat);
+		CHECK_OK(file.open("/", "HELLO.TXT", true));
 		CHECK_EQ(file.length(), 0);
-		file.write((const uint8_t*)"Hello, Pico!", 12);
-		CHECK_OK();
+		CHECK_OK(file.write((const uint8_t*)"Hello, Pico!", 12));
 		CHECK_EQ(file.length(), 12);
 		CHECK_EQ(file.position(), 12);
 
-		file.seek(0);
-		CHECK_OK();
+		CHECK_OK(file.seek(0));
 		char text[32] = {0};
-		CHECK_EQ(file.read((uint8_t*)text, sizeof(text)), 12);
+		uint32_t n;
+		CHECK_OK(file.read(reinterpret_cast<uint8_t*>(text), sizeof(text), n));
+		CHECK_EQ(n, 12);
 		CHECK(strcmp(text, "Hello, Pico!") == 0);
-		CHECK_EQ(file.read((uint8_t*)text, sizeof(text)), 0); // EOF
+		CHECK_OK(file.read(reinterpret_cast<uint8_t*>(text), sizeof(text), n));
+		CHECK_EQ(n, 0); // EOF
 	}
 	// Reopen: data and size must have been persisted.
 	{
-		File file(*v.fat, "/", "hello.txt");
-		CHECK_OK();
+		File file(*v.fat);
+		CHECK_OK(file.open("/", "hello.txt"));
 		CHECK_EQ(file.length(), 12);
 		char text[13] = {0};
-		CHECK_EQ(file.read((uint8_t*)text, 12), 12);
+		uint32_t n;
+		CHECK_OK(file.read(reinterpret_cast<uint8_t*>(text), 12, n));
+		CHECK_EQ(n, 12);
 		CHECK(strcmp(text, "Hello, Pico!") == 0);
 	}
 	CHECK_EQ(countEntries(*v.fat, "/"), 1);
-	CHECK_EQ(v.fat->countFreeClusters(), v.fat->getClusterCount() - rootDirectoryClusters() - 1);
+	CHECK_EQ(freeClusters(*v.fat), v.fat->getClusterCount() - rootDirectoryClusters() - 1);
 }
 
 static void test_create_existing_opens_it() {
 	Volume v;
-	CHECK_OK();
-	writeFile(*v.fat, "/", "DATA.BIN", 100, 1, 100);
-	CHECK_OK();
-	File file(*v.fat, "/", "DATA.BIN", true);
-	CHECK_OK();
+	CHECK_OK(v.error);
+	CHECK_OK(writeFile(*v.fat, "/", "DATA.BIN", 100, 1, 100));
+	File file(*v.fat);
+	CHECK_OK(file.open("/", "DATA.BIN", true));
 	CHECK_EQ(file.length(), 100);
 	CHECK_EQ(countEntries(*v.fat, "/"), 1);
 }
 
 static void test_empty_file_uses_no_clusters() {
 	Volume v;
-	CHECK_OK();
-	uint32_t freeBefore = v.fat->countFreeClusters();
-	File file(*v.fat, "/", "EMPTY.TXT", true);
-	CHECK_OK();
-	CHECK_EQ(v.fat->countFreeClusters(), freeBefore);
+	CHECK_OK(v.error);
+	uint32_t freeBefore = freeClusters(*v.fat);
+	File file(*v.fat);
+	CHECK_OK(file.open("/", "EMPTY.TXT", true));
+	CHECK_EQ(freeClusters(*v.fat), freeBefore);
 	uint8_t byte;
-	CHECK_EQ(file.read(&byte, 1), 0);
-	file.seek(0);
-	CHECK_OK();
-	file.seek(1);
-	CHECK_EQ(mdError, File_seekExceedsFileSize);
+	uint32_t n;
+	CHECK_OK(file.read(&byte, 1, n));
+	CHECK_EQ(n, 0);
+	CHECK_OK(file.seek(0));
+	CHECK_EQ(file.seek(1), File_seekExceedsFileSize);
 }
 
 static void test_multi_cluster_file() {
 	Volume v;
-	CHECK_OK();
-	uint32_t freeBefore = v.fat->countFreeClusters();
+	CHECK_OK(v.error);
+	uint32_t freeBefore = freeClusters(*v.fat);
 	const uint32_t length = 5000; // 10 clusters, written and read in uneven chunks
-	writeFile(*v.fat, "/", "BIG.BIN", length, 7, 700);
-	CHECK_OK();
+	CHECK_OK(writeFile(*v.fat, "/", "BIG.BIN", length, 7, 700));
 	CHECK(verifyFile(*v.fat, "/", "BIG.BIN", length, 7, 333));
 	CHECK(verifyFile(*v.fat, "/", "BIG.BIN", length, 7, 512));
 	CHECK(verifyFile(*v.fat, "/", "BIG.BIN", length, 7, 1));
-	CHECK_EQ(v.fat->countFreeClusters(), freeBefore - 10);
+	CHECK_EQ(freeClusters(*v.fat), freeBefore - 10);
 }
 
 static void test_large_single_read() {
 	Volume v;
-	CHECK_OK();
+	CHECK_OK(v.error);
 	static uint8_t buffer[4096];
 	fillPattern(buffer, sizeof(buffer), 0, 3);
 	{
-		File file(*v.fat, "/", "BLOCK.BIN", true);
-		file.write(buffer, sizeof(buffer)); // one call spanning 8 clusters
-		CHECK_OK();
+		File file(*v.fat);
+		CHECK_OK(file.open("/", "BLOCK.BIN", true));
+		CHECK_OK(file.write(buffer, sizeof(buffer))); // one call spanning 8 clusters
 	}
 	memset(buffer, 0, sizeof(buffer));
-	File file(*v.fat, "/", "BLOCK.BIN");
-	CHECK_EQ(file.read(buffer, sizeof(buffer)), sizeof(buffer));
+	File file(*v.fat);
+	CHECK_OK(file.open("/", "BLOCK.BIN"));
+	uint32_t n;
+	CHECK_OK(file.read(buffer, sizeof(buffer), n));
+	CHECK_EQ(n, sizeof(buffer));
 	CHECK(matchesPattern(buffer, sizeof(buffer), 0, 3));
 }
 
 static void test_cluster_boundaries() {
 	Volume v;
-	CHECK_OK();
-	uint32_t freeBefore = v.fat->countFreeClusters();
+	CHECK_OK(v.error);
+	uint32_t freeBefore = freeClusters(*v.fat);
 	static uint8_t buffer[CLUSTER_BYTES * 2 + 1];
 	fillPattern(buffer, sizeof(buffer), 0, 9);
 	{
-		File file(*v.fat, "/", "EDGE.BIN", true);
-		file.write(buffer, CLUSTER_BYTES);      // exactly one cluster
-		CHECK_OK();
-		CHECK_EQ(v.fat->countFreeClusters(), freeBefore - 1);
-		file.write(buffer + CLUSTER_BYTES, CLUSTER_BYTES); // exactly two
-		CHECK_OK();
-		CHECK_EQ(v.fat->countFreeClusters(), freeBefore - 2);
-		file.write(buffer + 2 * CLUSTER_BYTES, 1); // spills into a third
-		CHECK_OK();
-		CHECK_EQ(v.fat->countFreeClusters(), freeBefore - 3);
+		File file(*v.fat);
+		CHECK_OK(file.open("/", "EDGE.BIN", true));
+		CHECK_OK(file.write(buffer, CLUSTER_BYTES));      // exactly one cluster
+		CHECK_EQ(freeClusters(*v.fat), freeBefore - 1);
+		CHECK_OK(file.write(buffer + CLUSTER_BYTES, CLUSTER_BYTES)); // exactly two
+		CHECK_EQ(freeClusters(*v.fat), freeBefore - 2);
+		CHECK_OK(file.write(buffer + 2 * CLUSTER_BYTES, 1)); // spills into a third
+		CHECK_EQ(freeClusters(*v.fat), freeBefore - 3);
 		CHECK_EQ(file.length(), sizeof(buffer));
 	}
 	CHECK(verifyFile(*v.fat, "/", "EDGE.BIN", sizeof(buffer), 9, CLUSTER_BYTES));
 
 	// Seeking to a cluster boundary and reading across it.
-	File file(*v.fat, "/", "EDGE.BIN");
-	file.seek(CLUSTER_BYTES - 2);
-	CHECK_OK();
+	File file(*v.fat);
+	CHECK_OK(file.open("/", "EDGE.BIN"));
+	CHECK_OK(file.seek(CLUSTER_BYTES - 2));
 	uint8_t four[4];
-	CHECK_EQ(file.read(four, 4), 4);
+	uint32_t n;
+	CHECK_OK(file.read(four, 4, n));
+	CHECK_EQ(n, 4);
 	CHECK(matchesPattern(four, 4, CLUSTER_BYTES - 2, 9));
-	file.seek(CLUSTER_BYTES * 2);
-	CHECK_OK();
-	CHECK_EQ(file.read(four, 4), 1);
+	CHECK_OK(file.seek(CLUSTER_BYTES * 2));
+	CHECK_OK(file.read(four, 4, n));
+	CHECK_EQ(n, 1);
 	CHECK(matchesPattern(four, 1, CLUSTER_BYTES * 2, 9));
 }
 
 static void test_seek_and_overwrite() {
 	Volume v;
-	CHECK_OK();
-	writeFile(*v.fat, "/", "OVER.BIN", 2000, 5, 2000);
-	CHECK_OK();
-	uint32_t freeBefore = v.fat->countFreeClusters();
+	CHECK_OK(v.error);
+	CHECK_OK(writeFile(*v.fat, "/", "OVER.BIN", 2000, 5, 2000));
+	uint32_t freeBefore = freeClusters(*v.fat);
 	{
-		File file(*v.fat, "/", "OVER.BIN");
-		file.seek(700);
-		CHECK_OK();
+		File file(*v.fat);
+		CHECK_OK(file.open("/", "OVER.BIN"));
+		CHECK_OK(file.seek(700));
 		uint8_t xs[100];
 		memset(xs, 'X', sizeof(xs));
-		file.write(xs, sizeof(xs));
-		CHECK_OK();
+		CHECK_OK(file.write(xs, sizeof(xs)));
 		CHECK_EQ(file.position(), 800);
 		CHECK_EQ(file.length(), 2000); // overwrite must not grow the file
-		CHECK_EQ(v.fat->countFreeClusters(), freeBefore);
+		CHECK_EQ(freeClusters(*v.fat), freeBefore);
 
-		file.seek(2001);
-		CHECK_EQ(mdError, File_seekExceedsFileSize);
+		CHECK_EQ(file.seek(2001), File_seekExceedsFileSize);
 	}
-	File file(*v.fat, "/", "OVER.BIN");
+	File file(*v.fat);
+	CHECK_OK(file.open("/", "OVER.BIN"));
 	static uint8_t buffer[2000];
-	CHECK_EQ(file.read(buffer, sizeof(buffer)), 2000);
+	uint32_t n;
+	CHECK_OK(file.read(buffer, sizeof(buffer), n));
+	CHECK_EQ(n, 2000);
 	CHECK(matchesPattern(buffer, 700, 0, 5));
 	for (int i = 700; i < 800; i++) CHECK_EQ(buffer[i], 'X');
 	CHECK(matchesPattern(buffer + 800, 1200, 800, 5));
 
 	// Overwrite that runs past the end grows the file.
-	file.seek(1990);
-	file.write((const uint8_t*)"0123456789ABCDEFGHIJ", 20);
-	CHECK_OK();
+	CHECK_OK(file.seek(1990));
+	CHECK_OK(file.write((const uint8_t*)"0123456789ABCDEFGHIJ", 20));
 	CHECK_EQ(file.length(), 2010);
 }
 
 static void test_append_after_reopen() {
 	Volume v;
-	CHECK_OK();
-	writeFile(*v.fat, "/", "LOG.TXT", 1000, 2, 1000);
-	CHECK_OK();
+	CHECK_OK(v.error);
+	CHECK_OK(writeFile(*v.fat, "/", "LOG.TXT", 1000, 2, 1000));
 	for (int round = 0; round < 3; round++) {
-		File file(*v.fat, "/", "LOG.TXT");
-		CHECK_OK();
+		File file(*v.fat);
+		CHECK_OK(file.open("/", "LOG.TXT"));
 		uint32_t length = file.length();
-		file.seek(length);
-		CHECK_OK();
+		CHECK_OK(file.seek(length));
 		static uint8_t buffer[300];
 		fillPattern(buffer, sizeof(buffer), length, 2);
-		file.write(buffer, sizeof(buffer));
-		CHECK_OK();
+		CHECK_OK(file.write(buffer, sizeof(buffer)));
 	}
 	CHECK(verifyFile(*v.fat, "/", "LOG.TXT", 1900, 2, 256));
 }
 
 static void test_truncate() {
 	Volume v;
-	CHECK_OK();
-	uint32_t freeAtStart = v.fat->countFreeClusters();
-	writeFile(*v.fat, "/", "TRUNC.BIN", 3000, 4, 700); // 6 clusters
-	CHECK_OK();
-	CHECK_EQ(v.fat->countFreeClusters(), freeAtStart - 6);
+	CHECK_OK(v.error);
+	uint32_t freeAtStart = freeClusters(*v.fat);
+	CHECK_OK(writeFile(*v.fat, "/", "TRUNC.BIN", 3000, 4, 700)); // 6 clusters
+	CHECK_EQ(freeClusters(*v.fat), freeAtStart - 6);
 	{
-		File file(*v.fat, "/", "TRUNC.BIN");
-		file.seek(1000);
-		file.truncate();
-		CHECK_OK();
+		File file(*v.fat);
+		CHECK_OK(file.open("/", "TRUNC.BIN"));
+		CHECK_OK(file.seek(1000));
+		CHECK_OK(file.truncate());
 		CHECK_EQ(file.length(), 1000);
 	}
-	CHECK_EQ(v.fat->countFreeClusters(), freeAtStart - 2);
+	CHECK_EQ(freeClusters(*v.fat), freeAtStart - 2);
 	CHECK(verifyFile(*v.fat, "/", "TRUNC.BIN", 1000, 4, 100));
 
 	// Truncate at an exact cluster boundary keeps exactly that many clusters.
 	{
-		File file(*v.fat, "/", "TRUNC.BIN");
-		file.seek(CLUSTER_BYTES);
-		file.truncate();
-		CHECK_OK();
+		File file(*v.fat);
+		CHECK_OK(file.open("/", "TRUNC.BIN"));
+		CHECK_OK(file.seek(CLUSTER_BYTES));
+		CHECK_OK(file.truncate());
 	}
-	CHECK_EQ(v.fat->countFreeClusters(), freeAtStart - 1);
+	CHECK_EQ(freeClusters(*v.fat), freeAtStart - 1);
 
 	// Truncate to zero releases every cluster; the file can then grow again.
 	{
-		File file(*v.fat, "/", "TRUNC.BIN");
-		file.truncate();
-		CHECK_OK();
+		File file(*v.fat);
+		CHECK_OK(file.open("/", "TRUNC.BIN"));
+		CHECK_OK(file.truncate());
 		CHECK_EQ(file.length(), 0);
 	}
-	CHECK_EQ(v.fat->countFreeClusters(), freeAtStart);
-	writeFile(*v.fat, "/", "TRUNC.BIN", 600, 8, 600);
-	CHECK_OK();
+	CHECK_EQ(freeClusters(*v.fat), freeAtStart);
+	CHECK_OK(writeFile(*v.fat, "/", "TRUNC.BIN", 600, 8, 600));
 	CHECK(verifyFile(*v.fat, "/", "TRUNC.BIN", 600, 8, 600));
 }
 
 static void test_remove() {
 	Volume v;
-	CHECK_OK();
-	uint32_t freeAtStart = v.fat->countFreeClusters();
-	writeFile(*v.fat, "/", "KEEP.TXT", 100, 1, 100);
-	writeFile(*v.fat, "/", "GONE.TXT", 2000, 1, 700);
-	CHECK_OK();
+	CHECK_OK(v.error);
+	uint32_t freeAtStart = freeClusters(*v.fat);
+	CHECK_OK(writeFile(*v.fat, "/", "KEEP.TXT", 100, 1, 100));
+	CHECK_OK(writeFile(*v.fat, "/", "GONE.TXT", 2000, 1, 700));
 	cluster_t goneCluster;
 	uint32_t goneOffset;
 	{
-		DirectoryListing dl(*v.fat, "/");
+		DirectoryListing dl(*v.fat);
+		CHECK_OK(dl.open("/"));
 		CHECK(dl.find("GONE.TXT"));
 		goneCluster = dl.cluster();
 		goneOffset = dl.clusterOffset();
 	}
 	{
-		File file(*v.fat, "/", "GONE.TXT");
-		file.remove();
-		CHECK_OK();
+		File file(*v.fat);
+		CHECK_OK(file.open("/", "GONE.TXT"));
+		CHECK_OK(file.remove());
 		CHECK(!file.isOpen());
 	}
-	File gone(*v.fat, "/", "GONE.TXT");
-	CHECK_EQ(mdError, File_fileNotFound);
+	File gone(*v.fat);
+	CHECK_EQ(gone.open("/", "GONE.TXT"), File_fileNotFound);
 	CHECK_EQ(countEntries(*v.fat, "/"), 1);
-	CHECK_EQ(v.fat->countFreeClusters(), freeAtStart - 1);
+	CHECK_EQ(freeClusters(*v.fat), freeAtStart - 1);
 	CHECK(verifyFile(*v.fat, "/", "KEEP.TXT", 100, 1, 100));
 
 	// The freed directory slot is reused.
-	File again(*v.fat, "/", "NEW.TXT", true);
-	CHECK_OK();
-	DirectoryListing dl(*v.fat, "/");
+	File again(*v.fat);
+	CHECK_OK(again.open("/", "NEW.TXT", true));
+	DirectoryListing dl(*v.fat);
+	CHECK_OK(dl.open("/"));
 	CHECK(dl.find("NEW.TXT"));
 	CHECK_EQ(dl.cluster(), goneCluster);
 	CHECK_EQ(dl.clusterOffset(), goneOffset);
@@ -333,14 +335,13 @@ static void test_remove() {
 
 static void test_directory_grows() {
 	Volume v;
-	CHECK_OK();
+	CHECK_OK(v.error);
 	// 16 entries fit in a 512 byte cluster, so 40 files need 3 directory clusters.
 	const int fileCount = 40;
 	char name[13];
 	for (int i = 0; i < fileCount; i++) {
 		snprintf(name, sizeof(name), "F%02d.TXT", i);
-		writeFile(*v.fat, "/", name, 10 + i, (uint32_t)i, 64);
-		CHECK_OK();
+		CHECK_OK(writeFile(*v.fat, "/", name, 10 + i, (uint32_t)i, 64));
 	}
 	CHECK_EQ(countEntries(*v.fat, "/"), fileCount);
 	for (int i = 0; i < fileCount; i++) {
@@ -350,21 +351,17 @@ static void test_directory_grows() {
 	// FAT32: 3 directory clusters (root's first one was already used) + 40 file clusters.
 	// The FAT12/16 root directory has room for 512 entries, so it takes no clusters.
 	const uint32_t directoryClusters = rootDirectoryClusters() ? 3 : 0;
-	CHECK_EQ(v.fat->countFreeClusters(), v.fat->getClusterCount() - directoryClusters - fileCount);
+	CHECK_EQ(freeClusters(*v.fat), v.fat->getClusterCount() - directoryClusters - fileCount);
 }
 
 static void test_subdirectories() {
 	Volume v;
-	CHECK_OK();
-	makeDirectory(*v.fat, "/", "SUB");
-	CHECK_OK();
-	makeDirectory(*v.fat, "/SUB", "DEEP");
-	CHECK_OK();
-	makeDirectory(*v.fat, "/", "sub");
-	CHECK_EQ(mdError, File_alreadyExists);
+	CHECK_OK(v.error);
+	CHECK_OK(makeDirectory(*v.fat, "/", "SUB"));
+	CHECK_OK(makeDirectory(*v.fat, "/SUB", "DEEP"));
+	CHECK_EQ(makeDirectory(*v.fat, "/", "sub"), File_alreadyExists);
 
-	writeFile(*v.fat, "/SUB/DEEP", "NOTE.TXT", 1500, 11, 500);
-	CHECK_OK();
+	CHECK_OK(writeFile(*v.fat, "/SUB/DEEP", "NOTE.TXT", 1500, 11, 500));
 	CHECK(verifyFile(*v.fat, "/sub/deep", "note.txt", 1500, 11, 500));
 	// The original API's 11 character path form still works.
 	CHECK(verifyFile(*v.fat, "/SUB        /DEEP       ", "NOTE    TXT", 1500, 11, 500));
@@ -377,12 +374,12 @@ static void test_subdirectories() {
 	CHECK(verifyFile(*v.fat, "/SUB/DEEP/../DEEP", "NOTE.TXT", 1500, 11, 500));
 	CHECK_EQ(countEntries(*v.fat, "/SUB/.."), 1);
 
-	DirectoryListing missing(*v.fat, "/NOPE");
-	CHECK_EQ(mdError, DirectoryListing_directoryNotFound);
-	File asFile(*v.fat, "/", "SUB");
-	CHECK_EQ(mdError, File_isDirectory);
-	DirectoryListing fileAsDir(*v.fat, "/SUB/DEEP/NOTE.TXT");
-	CHECK_EQ(mdError, DirectoryListing_directoryNotFound);
+	DirectoryListing missing(*v.fat);
+	CHECK_EQ(missing.open("/NOPE"), DirectoryListing_directoryNotFound);
+	File asFile(*v.fat);
+	CHECK_EQ(asFile.open("/", "SUB"), File_isDirectory);
+	DirectoryListing fileAsDir(*v.fat);
+	CHECK_EQ(fileAsDir.open("/SUB/DEEP/NOTE.TXT"), DirectoryListing_directoryNotFound);
 }
 
 static void test_partition_table() {
@@ -403,88 +400,84 @@ static void test_partition_table() {
 	mbr[511] = 0xAA;
 	CHECK_EQ(device.write(mbr, 0), 0);
 
-	Partition partition(device, Partition::primary(0));
-	CHECK_OK();
+	Partition partition(device);
+	CHECK_OK(partition.open(Partition::primary(0)));
 	CHECK_EQ(partition.getSectorOffset(), start);
 	CHECK_EQ(partition.getSectorCount(), VOLUME_SECTORS);
 
-	formatFat32(partition, partition.getSectorCount(), 1);
-	CHECK_OK();
+	CHECK_OK(formatFat32(partition, partition.getSectorCount(), 1));
 	{
 		Fat fat(partition);
-		CHECK_OK();
-		writeFile(fat, "/", "PART.TXT", 900, 6, 900);
-		CHECK_OK();
+		CHECK_OK(fat.mount());
+		CHECK_OK(writeFile(fat, "/", "PART.TXT", 900, 6, 900));
 	}
 	// Remount and check the MBR survived and the data is inside the partition.
 	static uint8_t check[512];
 	CHECK_EQ(device.read(check, 0), 0);
 	CHECK(memcmp(check, mbr, sizeof(mbr)) == 0);
-	Partition again(device, Partition::primary(0));
+	Partition again(device);
+	CHECK_OK(again.open(Partition::primary(0)));
 	Fat fat(again);
-	CHECK_OK();
+	CHECK_OK(fat.mount());
 	CHECK(verifyFile(fat, "/", "PART.TXT", 900, 6, 900));
 
 	// Out of range access is rejected by the partition.
 	CHECK_EQ(again.read(check, VOLUME_SECTORS), Partition_sectorOutOfRange);
 
 	// Empty partition slot.
-	Partition empty(device, Partition::primary(1));
-	CHECK_EQ(mdError, Partition_tableInvalid);
+	Partition empty(device);
+	CHECK_EQ(empty.open(Partition::primary(1)), Partition_tableInvalid);
 }
 
 static void test_whole_device_without_partition_table() {
 	Disk disk(VOLUME_SECTORS);
-	Partition whole(disk.device(), Partition::WHOLE_DEVICE);
-	CHECK_OK();
-	formatFat32(whole, VOLUME_SECTORS, 1);
-	CHECK_OK();
+	Partition whole(disk.device());
+	CHECK_OK(whole.open(Partition::WHOLE_DEVICE));
+	CHECK_OK(formatFat32(whole, VOLUME_SECTORS, 1));
 	Fat fat(whole);
-	CHECK_OK();
-	writeFile(fat, "/", "RAW.TXT", 50, 1, 50);
+	CHECK_OK(fat.mount());
+	CHECK_OK(writeFile(fat, "/", "RAW.TXT", 50, 1, 50));
 	CHECK(verifyFile(fat, "/", "RAW.TXT", 50, 1, 50));
 }
 
 static void test_device_errors_propagate() {
 	// A RAM disk that can hold very few sectors fills up: the error must surface.
 	Disk disk(VOLUME_SECTORS, 12);
-	formatFat32(disk.device(), VOLUME_SECTORS, 1);
-	CHECK_OK();
+	CHECK_OK(formatFat32(disk.device(), VOLUME_SECTORS, 1));
 	disk.device().flush();
 	Fat fat(disk.device());
-	CHECK_OK();
-	File file(fat, "/", "FULL.BIN", true);
-	CHECK_OK();
+	CHECK_OK(fat.mount());
+	File file(fat);
+	CHECK_OK(file.open("/", "FULL.BIN", true));
 	static uint8_t buffer[512];
 	fillPattern(buffer, sizeof(buffer), 0, 1);
 	md_error_t error = 0;
 	for (int i = 0; i < 20 && !error; i++) {
-		file.write(buffer, sizeof(buffer));
-		error = mdError;
+		error = file.write(buffer, sizeof(buffer));
 	}
 	if (!error) {
 		// Behind a write-back cache the error appears when data reaches the device.
-		file.flush();
-		error = mdError;
+		error = file.flush();
 	}
 	CHECK_EQ(error, SectorDevice_storageFull);
 }
 
 static void test_multiple_open_files() {
 	Volume v;
-	CHECK_OK();
+	CHECK_OK(v.error);
 	{
-		File a(*v.fat, "/", "A.BIN", true);
-		File b(*v.fat, "/", "B.BIN", true);
-		File c(*v.fat, "/", "C.BIN", true);
-		CHECK_OK();
+		File a(*v.fat);
+		File b(*v.fat);
+		File c(*v.fat);
+		CHECK_OK(a.open("/", "A.BIN", true));
+		CHECK_OK(b.open("/", "B.BIN", true));
+		CHECK_OK(c.open("/", "C.BIN", true));
 		// Interleaved writes make the three cluster chains interleave on disk.
 		uint8_t chunk[200];
 		for (uint32_t i = 0; i < 10; i++) {
-			fillPattern(chunk, sizeof(chunk), i * 200, 1); a.write(chunk, sizeof(chunk));
-			fillPattern(chunk, sizeof(chunk), i * 200, 2); b.write(chunk, sizeof(chunk));
-			fillPattern(chunk, sizeof(chunk), i * 200, 3); c.write(chunk, sizeof(chunk));
-			CHECK_OK();
+			fillPattern(chunk, sizeof(chunk), i * 200, 1); CHECK_OK(a.write(chunk, sizeof(chunk)));
+			fillPattern(chunk, sizeof(chunk), i * 200, 2); CHECK_OK(b.write(chunk, sizeof(chunk)));
+			fillPattern(chunk, sizeof(chunk), i * 200, 3); CHECK_OK(c.write(chunk, sizeof(chunk)));
 		}
 	}
 	CHECK(verifyFile(*v.fat, "/", "A.BIN", 2000, 1, 333));
@@ -494,88 +487,80 @@ static void test_multiple_open_files() {
 
 static void test_file_opens_once() {
 	Volume v;
-	CHECK_OK();
-	writeFile(*v.fat, "/", "SHARED.BIN", 1500, 4, 500);
-	writeFile(*v.fat, "/", "OTHER.BIN", 10, 5, 10);
-	CHECK_OK();
-	File first(*v.fat, "/", "SHARED.BIN");
-	CHECK_OK();
+	CHECK_OK(v.error);
+	CHECK_OK(writeFile(*v.fat, "/", "SHARED.BIN", 1500, 4, 500));
+	CHECK_OK(writeFile(*v.fat, "/", "OTHER.BIN", 10, 5, 10));
+	File first(*v.fat);
+	CHECK_OK(first.open("/", "SHARED.BIN"));
 	{
-		File second(*v.fat, "/", "shared.bin");
-		CHECK_EQ(mdError, File_alreadyOpen);
+		File second(*v.fat);
+		CHECK_EQ(second.open("/", "shared.bin"), File_alreadyOpen);
 		CHECK(!second.isOpen());
 	}
 	// Asking to create it opens nothing either
-	File created(*v.fat, "/", "SHARED.BIN", true);
-	CHECK_EQ(mdError, File_alreadyOpen);
+	File created(*v.fat);
+	CHECK_EQ(created.open("/", "SHARED.BIN", true), File_alreadyOpen);
 	CHECK(!created.isOpen());
 	// The first is untouched by the failed opens
 	CHECK(first.isOpen());
 	uint8_t got[20];
-	first.seek(595);
-	CHECK_EQ(first.read(got, sizeof(got)), 20);
+	CHECK_OK(first.seek(595));
+	uint32_t n;
+	CHECK_OK(first.read(got, sizeof(got), n));
+	CHECK_EQ(n, 20);
 	CHECK(matchesPattern(got, 20, 595, 4));
 
 	// Other files open as usual, and closing one in the middle of the list
 	// leaves the others open
 	{
-		File other(*v.fat, "/", "OTHER.BIN");
-		CHECK_OK();
-		File third(*v.fat, "/", "THIRD.BIN", true);
-		CHECK_OK();
-		other.close();
-		CHECK_OK();
-		File again(*v.fat, "/", "OTHER.BIN");
-		CHECK_OK();
-		File thirdAgain(*v.fat, "/", "THIRD.BIN");
-		CHECK_EQ(mdError, File_alreadyOpen);
-		mdError = 0;
+		File other(*v.fat);
+		CHECK_OK(other.open("/", "OTHER.BIN"));
+		File third(*v.fat);
+		CHECK_OK(third.open("/", "THIRD.BIN", true));
+		CHECK_OK(other.close());
+		File again(*v.fat);
+		CHECK_OK(again.open("/", "OTHER.BIN"));
+		File thirdAgain(*v.fat);
+		CHECK_EQ(thirdAgain.open("/", "THIRD.BIN"), File_alreadyOpen);
 	}
-	mdError = 0;
-	File shared2(*v.fat, "/", "SHARED.BIN");
-	CHECK_EQ(mdError, File_alreadyOpen);
+	File shared2(*v.fat);
+	CHECK_EQ(shared2.open("/", "SHARED.BIN"), File_alreadyOpen);
 
 	// Once closed, it opens again
-	first.close();
-	CHECK_OK();
-	File reopened(*v.fat, "/", "SHARED.BIN");
-	CHECK_OK();
+	CHECK_OK(first.close());
+	File reopened(*v.fat);
+	CHECK_OK(reopened.open("/", "SHARED.BIN"));
 	CHECK_EQ(reopened.length(), 1500);
 }
 
 static void test_removed_file_can_be_created_again() {
 	Volume v;
-	CHECK_OK();
-	File file(*v.fat, "/", "GONE.TXT", true);
-	CHECK_OK();
-	file.write((const uint8_t*)"abc", 3);
-	file.remove();
-	CHECK_OK();
+	CHECK_OK(v.error);
+	File file(*v.fat);
+	CHECK_OK(file.open("/", "GONE.TXT", true));
+	CHECK_OK(file.write((const uint8_t*)"abc", 3));
+	CHECK_OK(file.remove());
 	CHECK(!file.isOpen());
 	// The new entry may take the freed slot the removed File pointed at
-	File again(*v.fat, "/", "GONE.TXT", true);
-	CHECK_OK();
+	File again(*v.fat);
+	CHECK_OK(again.open("/", "GONE.TXT", true));
 	CHECK_EQ(again.length(), 0);
 }
 
 static void test_unmount_closes_open_files() {
 	Volume v;
-	CHECK_OK();
-	File file(*v.fat, "/", "LOG.TXT", true);
-	CHECK_OK();
-	file.write((const uint8_t*)"0123456789", 10);
-	file.seek(10);
-	file.write((const uint8_t*)"abc", 3);
-	CHECK_OK();
+	CHECK_OK(v.error);
+	File file(*v.fat);
+	CHECK_OK(file.open("/", "LOG.TXT", true));
+	CHECK_OK(file.write((const uint8_t*)"0123456789", 10));
+	CHECK_OK(file.seek(10));
+	CHECK_OK(file.write((const uint8_t*)"abc", 3));
 	// Unmounting closes the File, storing its size, and leaves it closed
-	v.remount();
-	CHECK_OK();
+	CHECK_OK(v.remount());
 	CHECK(!file.isOpen());
-	file.write((const uint8_t*)"x", 1);
-	CHECK_EQ(mdError, File_notOpen);
-	mdError = 0;
-	File reopened(*v.fat, "/", "LOG.TXT");
-	CHECK_OK();
+	CHECK_EQ(file.write((const uint8_t*)"x", 1), File_notOpen);
+	File reopened(*v.fat);
+	CHECK_OK(reopened.open("/", "LOG.TXT"));
 	CHECK_EQ(reopened.length(), 13);
 	// file outlives the Fat it was opened on: its destructor must not touch it (ASan checks)
 }
@@ -586,80 +571,78 @@ static void test_large_clusters() {
 	for (unsigned s = 0; s < sizeof(sizes); s++) {
 		uint8_t spc = sizes[s];
 		Volume v(spc, (sector_t)(66000u * spc + 2048));
-		CHECK_OK();
+		CHECK_OK(v.error);
 		CHECK_EQ(v.fat->getBytesPerCluster(), spc * 512u);
-		uint32_t freeBefore = v.fat->countFreeClusters();
+		uint32_t freeBefore = freeClusters(*v.fat);
 		uint32_t length = spc * 512u + 700; // spans a cluster boundary
-		writeFile(*v.fat, "/", "BIG.BIN", length, spc, 700);
-		CHECK_OK();
+		CHECK_OK(writeFile(*v.fat, "/", "BIG.BIN", length, spc, 700));
 		CHECK(verifyFile(*v.fat, "/", "BIG.BIN", length, spc, 512));
-		CHECK_EQ(v.fat->countFreeClusters(), freeBefore - 2);
-		File file(*v.fat, "/", "BIG.BIN");
-		file.seek(spc * 512u - 1);
-		CHECK_OK();
+		CHECK_EQ(freeClusters(*v.fat), freeBefore - 2);
+		File file(*v.fat);
+		CHECK_OK(file.open("/", "BIG.BIN"));
+		CHECK_OK(file.seek(spc * 512u - 1));
 		uint8_t two[2];
-		CHECK_EQ(file.read(two, 2), 2);
+		uint32_t n;
+		CHECK_OK(file.read(two, 2, n));
+		CHECK_EQ(n, 2);
 		CHECK(matchesPattern(two, 2, spc * 512u - 1, spc));
 	}
 }
 
 static void test_remount_persists_everything() {
 	Volume v;
-	CHECK_OK();
-	makeDirectory(*v.fat, "/", "DIR");
-	writeFile(*v.fat, "/DIR", "ONE.BIN", 3000, 1, 700);
-	writeFile(*v.fat, "/", "TWO.BIN", 10, 2, 10);
-	CHECK_OK();
-	uint32_t freeBefore = v.fat->countFreeClusters();
-	v.remount();
-	CHECK_OK();
+	CHECK_OK(v.error);
+	CHECK_OK(makeDirectory(*v.fat, "/", "DIR"));
+	CHECK_OK(writeFile(*v.fat, "/DIR", "ONE.BIN", 3000, 1, 700));
+	CHECK_OK(writeFile(*v.fat, "/", "TWO.BIN", 10, 2, 10));
+	uint32_t freeBefore = freeClusters(*v.fat);
+	CHECK_OK(v.remount());
 	CHECK(verifyFile(*v.fat, "/DIR", "ONE.BIN", 3000, 1, 700));
 	CHECK(verifyFile(*v.fat, "/", "TWO.BIN", 10, 2, 10));
-	CHECK_EQ(v.fat->countFreeClusters(), freeBefore);
+	CHECK_EQ(freeClusters(*v.fat), freeBefore);
 }
 
 // The size in a file's directory entry on the volume, as another program would see it
 static uint32_t storedSize(Fat &fat, const char *path, const char *name) {
-	DirectoryListing dl(fat, path);
-	return dl.find(name) ? dl.directoryEntry()->DIR_FileSize : 0xFFFFFFFFu;
+	DirectoryListing dl(fat);
+	if (dl.open(path)) return 0xFFFFFFFFu;
+	return dl.find(name) ? dl.directoryEntry().DIR_FileSize : 0xFFFFFFFFu;
 }
 
 static void test_flush_persists_size() {
 	Volume v;
-	CHECK_OK();
-	File file(*v.fat, "/", "GROW.TXT", true);
+	CHECK_OK(v.error);
+	File file(*v.fat);
+	CHECK_OK(file.open("/", "GROW.TXT", true));
 	// The first write gives the file its first cluster, so the entry (with the
 	// size at that moment) is stored straight away.
-	file.write((const uint8_t*)"abc", 3);
-	CHECK_OK();
+	CHECK_OK(file.write((const uint8_t*)"abc", 3));
 	CHECK_EQ(storedSize(*v.fat, "/", "GROW.TXT"), 3);
 	// Later writes only update the size in memory until flush.
-	file.write((const uint8_t*)"def", 3);
-	CHECK_OK();
+	CHECK_OK(file.write((const uint8_t*)"def", 3));
 	CHECK_EQ(storedSize(*v.fat, "/", "GROW.TXT"), 3);
-	file.flush();
-	CHECK_OK();
+	CHECK_OK(file.flush());
 	CHECK_EQ(storedSize(*v.fat, "/", "GROW.TXT"), 6);
-	file.write((const uint8_t*)"ghi", 3);
-	file.close();
-	CHECK_OK();
+	CHECK_OK(file.write((const uint8_t*)"ghi", 3));
+	CHECK_OK(file.close());
 	CHECK(!file.isOpen());
-	file.write((const uint8_t*)"x", 1);
-	CHECK_EQ(mdError, File_notOpen);
-	File reopened(*v.fat, "/", "GROW.TXT");
+	CHECK_EQ(file.write((const uint8_t*)"x", 1), File_notOpen);
+	File reopened(*v.fat);
+	CHECK_OK(reopened.open("/", "GROW.TXT"));
 	CHECK_EQ(reopened.length(), 9);
 }
 
 static void test_first_cluster_written_immediately() {
 	// Even without a flush, a file that got data is never left pointing at no cluster.
 	Volume v;
-	CHECK_OK();
-	File file(*v.fat, "/", "NEW.BIN", true);
-	file.write((const uint8_t*)"x", 1);
-	CHECK_OK();
-	DirectoryListing dl(*v.fat, "/");
+	CHECK_OK(v.error);
+	File file(*v.fat);
+	CHECK_OK(file.open("/", "NEW.BIN", true));
+	CHECK_OK(file.write((const uint8_t*)"x", 1));
+	DirectoryListing dl(*v.fat);
+	CHECK_OK(dl.open("/"));
 	CHECK(dl.find("NEW.BIN"));
-	CHECK(dl.directoryEntry()->DIR_FstClusLO != 0 || dl.directoryEntry()->DIR_FstClusHI != 0);
+	CHECK(dl.directoryEntry().DIR_FstClusLO != 0 || dl.directoryEntry().DIR_FstClusHI != 0);
 }
 
 static void test_deleted_first_character_name() {
@@ -669,23 +652,24 @@ static void test_deleted_first_character_name() {
 	return;
 #endif
 	Volume v;
-	CHECK_OK();
+	CHECK_OK(v.error);
 	const char name[] = "\xE5" "AB.TXT";
-	writeFile(*v.fat, "/", name, 20, 1, 20);
-	CHECK_OK();
+	CHECK_OK(writeFile(*v.fat, "/", name, 20, 1, 20));
 	CHECK(verifyFile(*v.fat, "/", name, 20, 1, 20));
-	DirectoryListing dl(*v.fat, "/");
+	DirectoryListing dl(*v.fat);
+	CHECK_OK(dl.open("/"));
 	CHECK(dl.next());
-	CHECK_EQ(dl.directoryEntry()->DIR_Name[0], 0x05);
+	CHECK_EQ(dl.directoryEntry().DIR_Name[0], 0x05);
 	CHECK_EQ(countEntries(*v.fat, "/"), 1);
 }
 
 static void test_name_listing_format() {
 	Volume v;
-	CHECK_OK();
-	writeFile(*v.fat, "/", "NOEXT", 1, 1, 1);
-	writeFile(*v.fat, "/", "A.B", 1, 1, 1);
-	DirectoryListing dl(*v.fat, "/");
+	CHECK_OK(v.error);
+	CHECK_OK(writeFile(*v.fat, "/", "NOEXT", 1, 1, 1));
+	CHECK_OK(writeFile(*v.fat, "/", "A.B", 1, 1, 1));
+	DirectoryListing dl(*v.fat);
+	CHECK_OK(dl.open("/"));
 	char name[32];
 	CHECK(dl.next());
 	dl.name(name, sizeof(name));

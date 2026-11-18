@@ -3,6 +3,8 @@
 
 #include "net/mdawson/filesystem/SectorDevice.h"
 
+#include <memory>
+
 MFS_NAMESPACE_BEGIN
 
 /**
@@ -21,11 +23,13 @@ private:
 	uint32_t m_capacity;     // hash table slots (power of two)
 	uint32_t m_maxStored;
 	uint32_t m_stored;
-	sector_t *m_keys;        // hash slot -> sector number, EMPTY_KEY when unused
-	uint32_t *m_index;       // hash slot -> index into m_data
-	uint8_t *m_data;         // maxStoredSectors * 512 bytes, filled in insertion order
+	std::unique_ptr<sector_t[]> m_keys;  // hash slot -> sector number, EMPTY_KEY when unused
+	std::unique_ptr<uint32_t[]> m_index; // hash slot -> index into m_data
+	std::unique_ptr<uint8_t[]> m_data;   // maxStoredSectors * 512 bytes, filled in insertion order
 
-	static const sector_t EMPTY_KEY = (sector_t)-1;
+	static constexpr sector_t EMPTY_KEY = static_cast<sector_t>(-1);
+
+	static uint32_t capacityFor(uint32_t maxStoredSectors);
 
 	int32_t findSlot(sector_t sector) const;
 
@@ -35,7 +39,6 @@ public:
 	 * @param maxStoredSectors Maximum number of distinct non-zero sectors kept in RAM.
 	 */
 	MemorySectorDevice(sector_t sectorCount, uint32_t maxStoredSectors);
-	~MemorySectorDevice(void);
 	MemorySectorDevice(const MemorySectorDevice&) = delete;
 	MemorySectorDevice& operator=(const MemorySectorDevice&) = delete;
 
@@ -48,9 +51,9 @@ public:
 	/**
 	 * @see SectorDevice
 	 */
-	virtual md_error_t read(uint8_t* data, sector_t sector);
-	virtual md_error_t write(const uint8_t* data, sector_t sector);
-	virtual uint32_t getBytesPerSector() const;
+	md_error_t read(uint8_t* data, sector_t sector) override;
+	md_error_t write(const uint8_t* data, sector_t sector) override;
+	uint32_t getBytesPerSector() const override;
 };
 
 MFS_NAMESPACE_END

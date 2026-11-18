@@ -1,30 +1,29 @@
 #include "MemorySectorDevice.h"
 
-#include "net/mdawson/filesystem/GlobalError.h"
+#include "net/mdawson/filesystem/Error.h"
 
 #include <string.h>
 
 MFS_NAMESPACE_BEGIN
 
-static const uint32_t BYTES_PER_SECTOR = 512;
+constexpr uint32_t BYTES_PER_SECTOR = 512;
 
-MemorySectorDevice::MemorySectorDevice(sector_t sectorCount, uint32_t maxStoredSectors)
-	: m_sectorCount(sectorCount), m_maxStored(maxStoredSectors), m_stored(0) {
+constexpr sector_t MemorySectorDevice::EMPTY_KEY;
+
+uint32_t MemorySectorDevice::capacityFor(uint32_t maxStoredSectors) {
 	// Keep the open addressing hash table at most 50% full.
-	m_capacity = 1;
-	while (m_capacity < maxStoredSectors * 2) {
-		m_capacity <<= 1;
+	uint32_t capacity = 1;
+	while (capacity < maxStoredSectors * 2) {
+		capacity <<= 1;
 	}
-	m_keys = new sector_t[m_capacity];
-	m_index = new uint32_t[m_capacity];
-	m_data = new uint8_t[(size_t)maxStoredSectors * BYTES_PER_SECTOR];
-	clear();
+	return capacity;
 }
 
-MemorySectorDevice::~MemorySectorDevice(void) {
-	delete[] m_keys;
-	delete[] m_index;
-	delete[] m_data;
+MemorySectorDevice::MemorySectorDevice(sector_t sectorCount, uint32_t maxStoredSectors)
+	: m_sectorCount(sectorCount), m_capacity(capacityFor(maxStoredSectors)), m_maxStored(maxStoredSectors), m_stored(0),
+	  m_keys(new sector_t[m_capacity]), m_index(new uint32_t[m_capacity]),
+	  m_data(new uint8_t[static_cast<size_t>(maxStoredSectors) * BYTES_PER_SECTOR]) {
+	clear();
 }
 
 void MemorySectorDevice::clear() {
@@ -44,7 +43,7 @@ int32_t MemorySectorDevice::findSlot(sector_t sector) const {
 	uint32_t mask = m_capacity - 1;
 	for (uint32_t i = hashSector(sector) & mask; ; i = (i + 1) & mask) {
 		if (m_keys[i] == sector || m_keys[i] == EMPTY_KEY) {
-			return (int32_t)i;
+			return static_cast<int32_t>(i);
 		}
 	}
 }
@@ -58,7 +57,7 @@ md_error_t MemorySectorDevice::read(uint8_t* data, sector_t sector) {
 	if (m_keys[slot] == EMPTY_KEY) {
 		memset(data, 0, BYTES_PER_SECTOR);
 	} else {
-		memcpy(data, m_data + (size_t)m_index[slot] * BYTES_PER_SECTOR, BYTES_PER_SECTOR);
+		memcpy(data, m_data.get() + static_cast<size_t>(m_index[slot]) * BYTES_PER_SECTOR, BYTES_PER_SECTOR);
 	}
 	return 0;
 }
@@ -84,7 +83,7 @@ md_error_t MemorySectorDevice::write(const uint8_t* data, sector_t sector) {
 		m_keys[slot] = sector;
 		m_index[slot] = m_stored++;
 	}
-	memcpy(m_data + (size_t)m_index[slot] * BYTES_PER_SECTOR, data, BYTES_PER_SECTOR);
+	memcpy(m_data.get() + static_cast<size_t>(m_index[slot]) * BYTES_PER_SECTOR, data, BYTES_PER_SECTOR);
 	return 0;
 }
 

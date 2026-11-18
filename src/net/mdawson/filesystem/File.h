@@ -7,11 +7,13 @@
 #include "net/mdawson/filesystem/Chain.h"
 #include "net/mdawson/filesystem/LongName.h"
 
+#include <memory>
+
 MFS_NAMESPACE_BEGIN
 
 #pragma pack(1)
 
-typedef struct // FAT 32 Byte Directory Entry Structure
+struct DirectoryEntry // FAT 32 Byte Directory Entry Structure
 {
   /*
           DIR_Name	0	11	Short name.
@@ -81,9 +83,9 @@ typedef struct // FAT 32 Byte Directory Entry Structure
   */
   uint32_t DIR_FileSize;
 
-} DirectoryEntry;
+};
 
-typedef struct
+struct DirectoryEntryLong
 {
   // 	0	1	The order of this entry in the sequence of long dir entries associated
   // with the short dir entry at the end of the long dir set.
@@ -116,7 +118,7 @@ typedef struct
   // 28	4	Characters 12-13 of the long-name sub-component in this dir entry.
   uint16_t LDIR_Name3[2];
 
-} DirectoryEntryLong;
+};
 
 #pragma pack()
 
@@ -160,7 +162,9 @@ static_assert(sizeof(DirectoryEntryLong) == 32, "DirectoryEntryLong must be 32 b
 	 * by flush(), close() or the destructor. Call flush() when data must survive a
 	 * power loss.
 	 *
-	 * Check mdError (or isOpen()) after construction.
+	 * Construct a File on a volume, then open() it. Every operation returns an
+	 * md_error_t (0 for success); operations on a File that isn't open fail with
+	 * File_notOpen.
 	 */
 	class File {
 	private:
@@ -183,12 +187,19 @@ static_assert(sizeof(DirectoryEntryLong) == 32, "DirectoryEntryLong must be 32 b
 		// Next File open on the same volume (see Fat::m_openFiles)
 		File *m_nextOpen;
 
-		void writeDirectoryEntry();
+		md_error_t writeDirectoryEntry();
 		void touch();
 		/** Remove this File from the volume's open files and mark it closed. */
 		void unlinkOpen();
 
 	public:
+		explicit File(Fat &drive);
+		/** Closes (and so flushes) the file if it is open; errors are ignored. */
+		~File();
+
+		File(const File&) = delete;
+		File& operator=(const File&) = delete;
+
 		/**
 		 * Open (and if create is true, create if not present) the file name in directory path.
 		 *
@@ -196,15 +207,12 @@ static_assert(sizeof(DirectoryEntryLong) == 32, "DirectoryEntryLong must be 32 b
 		 * @param name File name, e.g. "TEST.TXT"; mandatory.
 		 * @param create true if file is to be created if not present, else false.
 		 *
-		 * Fails with File_alreadyOpen if another File has the file open, by any of
-		 * its names.
+		 * Fails with File_fileNotFound, File_isDirectory, File_invalidName,
+		 * DirectoryListing_directoryNotFound, Fat_notMounted, a device error, or
+		 * File_alreadyOpen if this File, or another File, has the file open (by any
+		 * of its names).
 		 */
-		File(Fat &drive, const char* path, const char *name, bool create = false);
-		/** Closes (and so flushes) the file. */
-		~File();
-
-		File(const File&) = delete;
-		File& operator=(const File&) = delete;
+		md_error_t open(const char *path, const char *name, bool create = false);
 
 		bool isOpen() const;
 
@@ -212,23 +220,23 @@ static_assert(sizeof(DirectoryEntryLong) == 32, "DirectoryEntryLong must be 32 b
 		 * Read data from the file at the current position.
 		 *
 		 * @param data Where to put the result; mandatory.
-		 * @param bytesToRead The number of bytes to read maximum; mandatory.
-		 * @return The number of bytes read (less than requested at end of file).
+		 * @param bytesToRead The number of bytes to read maximum.
+		 * @param bytesRead Set to the number of bytes read: less than requested at
+		 *        the end of the file, and set even when an error stops the read.
 		 */
-		uint32_t read(uint8_t* data, uint32_t bytesToRead);
+		md_error_t read(uint8_t *data, uint32_t bytesToRead, uint32_t &bytesRead);
 
 		/**
 		 * Write data to the file at the current position, growing the file as needed.
-		 *
-		 * @param data Where to read the data from; mandatory.
-		 * @param bytesToWrite Number of bytes to write; mandatory.
+		 * If the write stops part way (e.g. the volume is full) the file keeps what
+		 * was written.
 		 */
-		void write(const uint8_t* data, uint32_t bytesToWrite);
+		md_error_t write(const uint8_t *data, uint32_t bytesToWrite);
 
 		/**
 		 * Seek to an position in a file (0 to length() inclusive).
 		 */
-		void seek(uint32_t position);
+		md_error_t seek(uint32_t position);
 
 		/**
 		 * Get the length of the file.
@@ -243,26 +251,34 @@ static_assert(sizeof(DirectoryEntryLong) == 32, "DirectoryEntryLong must be 32 b
 		/**
 		 * Truncate a file at the current position.
 		 */
-		void truncate();
+		md_error_t truncate();
 
 		/**
 		 * Store the directory entry (size, times) if it changed and flush the device
 		 * (e.g. a write-back cache), so that everything written so far is on the media.
 		 */
-		void flush();
+		md_error_t flush();
 
-		/** Flush and close. Further operations fail with File_notOpen. */
-		void close();
+		/**
+		 * Flush and close. The File is closed even if flushing fails (the error is
+		 * returned). It can be opened again afterwards.
+		 */
+		md_error_t close();
 
 		/**
 		 * Delete a file.  Called remove as delete is reserved. The File is closed afterwards.
 		 */
-		void remove();
+		md_error_t remove();
 	};
 
 	/**
 	 * Listing of directory entrys is done through here.
 	 * Deleted entries, long file name entries and the volume label are skipped.
+	 *
+	 * Construct it on a volume, then open() a directory. Changes (createEntry() and
+	 * the like) return an md_error_t. next() and find() return whether they found an
+	 * entry, so they can drive a loop; when they return false, error() says whether
+	 * that was the end of the directory (0) or a failure.
 	 */
 	class DirectoryListing {
 	private:
@@ -271,7 +287,9 @@ static_assert(sizeof(DirectoryEntryLong) == 32, "DirectoryEntryLong must be 32 b
 		cluster_t m_startCluster;
 		cluster_t m_entryCluster;
 		uint32_t m_entryClusterOffset;
+		bool m_open;
 		bool m_atEnd;
+		md_error_t m_error;
 
 		DirectoryEntry m_directoryEntry;
 
@@ -284,23 +302,29 @@ static_assert(sizeof(DirectoryEntryLong) == 32, "DirectoryEntryLong must be 32 b
 		uint8_t m_runNext;           // next expected ordinal
 		uint8_t m_runChecksum;
 #ifdef MFS_LONG_FILE_NAMES
-		uint16_t *m_longName;        // heap, LFN_MAX_ENTRIES * 13 units
+		std::unique_ptr<uint16_t[]> m_longName; // LFN_MAX_ENTRIES * 13 units
 		uint32_t m_longNameLength;
 		void readLongNameChars(const DirectoryEntryLong &entry, uint32_t index);
 #endif
 
 		void resetRun();
 		/** Write count entries to consecutive free slots, growing the directory as needed. */
-		void writeEntries(const DirectoryEntry *entries, uint32_t count);
+		md_error_t writeEntries(const DirectoryEntry *entries, uint32_t count);
 
 	public:
-		/**
-		 * @param path Directory to list, e.g. "/" or "/SUB". Sets mdError if not found.
-		 */
-		DirectoryListing(Fat &drive, const char* path);
-		~DirectoryListing();
+		explicit DirectoryListing(Fat &drive);
 		DirectoryListing(const DirectoryListing&) = delete;
 		DirectoryListing& operator=(const DirectoryListing&) = delete;
+
+		/**
+		 * @param path Directory to list, e.g. "/" or "/SUB". Fails with
+		 *        DirectoryListing_directoryNotFound, DirectoryListing_invalidPathFormat,
+		 *        Fat_notMounted or a device error.
+		 */
+		md_error_t open(const char *path);
+
+		/** Error from the last next() or find(), or DirectoryListing_notOpen. */
+		md_error_t error() const;
 
 		/** Go back to the first entry of this directory. */
 		void reset();
@@ -308,26 +332,29 @@ static_assert(sizeof(DirectoryEntryLong) == 32, "DirectoryEntryLong must be 32 b
 		/**
 		 * Move to the next entry.
 		 * @param findEmpty If true, move to the next free slot instead.
-		 * @return false at the end of the listing.
+		 * @return false at the end of the listing, or on an error (see error()).
 		 */
 		bool next(bool findEmpty = false);
 
-		/** Find an entry by name (short, 11 character or long form). @return false if not found. */
+		/**
+		 * Find an entry by name (short, 11 character or long form). @return false if
+		 * not found, or on an error (see error(); File_invalidName for a bad name).
+		 */
 		bool find(const char *name);
 		bool find(const char *name, uint32_t length);
 		/** Find an entry by its 11 character directory form name (not null terminated). */
 		bool findShortName(const char shortName[11]);
 
 		/** Location of the current entry. */
-		cluster_t cluster();
-		uint32_t clusterOffset();
-		DirectoryEntry *directoryEntry();
+		cluster_t cluster() const;
+		uint32_t clusterOffset() const;
+		const DirectoryEntry &directoryEntry() const;
 
 		/**
 		 * Name of the current entry as UTF-8: the long name if there is one (and long
 		 * names are enabled), otherwise "NAME.EXT". @return length.
 		 */
-		uint32_t name(char *out, uint32_t size);
+		uint32_t name(char *out, uint32_t size) const;
 
 		/** True if the current entry has a (valid) long name. */
 		bool hasLongName() const;
@@ -344,22 +371,22 @@ static_assert(sizeof(DirectoryEntryLong) == 32, "DirectoryEntryLong must be 32 b
 		 * Create a new entry called name, with long name entries if needed.
 		 * Does not check whether name already exists. Afterwards the current entry is the new entry.
 		 */
-		void createEntry(const char *name, uint8_t attr, cluster_t firstCluster);
+		md_error_t createEntry(const char *name, uint8_t attr, cluster_t firstCluster);
 
 		/**
 		 * Store entry in the first free slot, growing the directory if needed.
 		 * Afterwards the current entry is the new entry.
 		 */
-		void addEntry(const DirectoryEntry &entry);
+		md_error_t addEntry(const DirectoryEntry &entry);
 
 		/** Add an empty file entry; name in 11 character directory form. */
-		void addFileEntry(const char* name);
+		md_error_t addFileEntry(const char *name);
 	};
 
 	/**
 	 * Create directory name inside directory path.
 	 */
-	void makeDirectory(Fat &drive, const char *path, const char *name);
+	md_error_t makeDirectory(Fat &drive, const char *path, const char *name);
 
 MFS_NAMESPACE_END
 

@@ -50,7 +50,7 @@ namespace TestFramework {
 	} \
 } while (0)
 
-/** Check that the driver's global error is clear. */
-#define CHECK_OK() CHECK_EQ(mdError, 0)
+/** Check that a driver call returned 0 (success). */
+#define CHECK_OK(call) CHECK_EQ((call), 0)
 
 #endif

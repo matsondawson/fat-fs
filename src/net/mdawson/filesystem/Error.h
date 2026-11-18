@@ -1,28 +1,13 @@
-#ifndef net_mdawson_error_GlobalError
-#define net_mdawson_error_GlobalError
+#ifndef net_mdawson_filesystem_Error
+#define net_mdawson_filesystem_Error
 
 #include "net/mdawson/common/Types.h"
 
 MFS_NAMESPACE_BEGIN
 
 /**
- * Thread local when MFS_THREAD_LOCAL_ERROR is defined (CMake option
- * FAT_THREAD_LOCAL_ERROR), so threads that each use their own volume see only
- * their own errors. Objects themselves are still not thread safe: one volume, and
- * the Files on it, must only be used from one thread at a time.
- */
-#ifdef MFS_THREAD_LOCAL_ERROR
-#define MFS_ERROR_STORAGE thread_local
-#else
-#define MFS_ERROR_STORAGE
-#endif
-
-extern MFS_ERROR_STORAGE md_error_t mdError;
-
-#define mdRaiseError(_value) mdError=_value;return;
-
-/**
- * Error enumerations.
+ * Error codes returned (as md_error_t) by the driver's functions. 0 means
+ * success. Device implementations return the SectorDevice_ codes.
  */
 enum {
 	/** Device is not present */
@@ -42,15 +27,12 @@ enum {
 };
 
 enum {
-	/** Offset is outside the sector */
-	Sector_indexOutOfRange = 2000,
-};
-
-enum {
 	/** Sector parameter exceeds partitions size */
 	Partition_sectorOutOfRange = 3000,
 	/** The partition table has an invalid format */
 	Partition_tableInvalid,
+	/** Partition::open() hasn't succeeded */
+	Partition_notOpen,
 };
 
 enum {
@@ -77,7 +59,7 @@ enum {
 	Fat_CannotAccessBeyondCluster,
 	/** A cluster number outside the volume's data region was used */
 	Fat_clusterOutOfRange,
-	/** Volume is not mounted (construction failed) */
+	/** Volume is not mounted (Fat::mount() hasn't succeeded) */
 	Fat_notMounted,
 	/** Too few sectors for a FAT32 volume with the requested cluster size */
 	Fat_formatVolumeTooSmall,
@@ -92,18 +74,20 @@ enum {
 enum {
 	File_fileNotFound = 6000,
 	File_seekExceedsFileSize,
-	/** Operation on a File whose construction failed */
+	/** Operation on a File that isn't open */
 	File_notOpen,
 	/** Name is not a valid 8.3 short name */
 	File_invalidName,
 	/** Tried to open a directory as a file, or create something that exists */
 	File_isDirectory,
 	File_alreadyExists,
-	/** The file is already open through another File object */
+	/** The file is already open through another File object, or this File is already open */
 	File_alreadyOpen,
 
 	DirectoryListing_directoryNotFound = 8000,
 	DirectoryListing_invalidPathFormat,
+	/** Operation on a DirectoryListing that isn't open */
+	DirectoryListing_notOpen,
 };
 
 enum {
@@ -111,7 +95,6 @@ enum {
 	/** The cluster chain is longer than the volume, i.e. the FAT contains a loop */
 	Chain_loopDetected,
 };
-
 
 MFS_NAMESPACE_END
 

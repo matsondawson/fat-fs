@@ -3,20 +3,25 @@
 
 #include "net/mdawson/filesystem/SectorDevice.h"
 
+#include <memory>
+
 MFS_NAMESPACE_BEGIN
 
 #ifdef MFS_BLOCK_CACHE
 
-/** Default number of cached sectors: 4 x 512 bytes = 2KB, sensible for a Pico. */
+// Can be set from the build to change the default below.
 #ifndef MFS_BLOCK_CACHE_DEFAULT_SLOTS
 #define MFS_BLOCK_CACHE_DEFAULT_SLOTS 4
 #endif
+
+/** Default number of cached sectors: 4 x 512 bytes = 2KB, sensible for a Pico. */
+constexpr uint32_t BLOCK_CACHE_DEFAULT_SLOTS = MFS_BLOCK_CACHE_DEFAULT_SLOTS;
 
 /**
  * A sector cache that wraps another SectorDevice, so the driver is unchanged:
  *
  *   CachedSectorDevice cache(sd, 4);   // 4 sectors of cache
- *   Partition partition(cache, Partition::primary(0));
+ *   Partition partition(cache);         // then partition.open(Partition::primary(0))
  *
  * - A fixed number of slots, allocated once in the constructor (no heap use after).
  * - Least recently used slot is evicted; each slot has a dirty flag.
@@ -54,19 +59,19 @@ private:
 	bool m_readAhead;
 	uint32_t m_tick;
 
-	sector_t *m_sectors;     // INVALID_SECTOR when slot unused
-	uint32_t *m_lastUsed;    // tick of last use, for LRU
-	bool *m_dirty;
-	bool *m_readAheadSlot;   // read ahead and not yet read
-	uint8_t *m_data;         // m_slotCount * 512 bytes
+	std::unique_ptr<sector_t[]> m_sectors;   // INVALID_SECTOR when slot unused
+	std::unique_ptr<uint32_t[]> m_lastUsed;  // tick of last use, for LRU
+	std::unique_ptr<bool[]> m_dirty;
+	std::unique_ptr<bool[]> m_readAheadSlot; // read ahead and not yet read
+	std::unique_ptr<uint8_t[]> m_data;       // m_slotCount * 512 bytes
 
 	Stats m_stats;
 
-	static const sector_t INVALID_SECTOR = (sector_t)-1;
+	static constexpr sector_t INVALID_SECTOR = static_cast<sector_t>(-1);
 
 	int32_t findSlot(sector_t sector) const;
-	/** Find a slot to (re)use, writing back its dirty contents. -1 and error on failure. */
-	int32_t claimSlot(md_error_t *error);
+	/** Find a slot to (re)use, writing back its dirty contents. slot is -1 on failure. */
+	md_error_t claimSlot(int32_t &slot);
 	md_error_t writeBack(uint32_t slot);
 	uint8_t *slotData(uint32_t slot) const;
 	/** Read sector into the cache if it isn't there, ignoring any error. */
@@ -79,19 +84,19 @@ public:
 	 * @param writeThrough true to write every sector to the device immediately.
 	 * @param readAhead true to read the next sector into the cache as well (see above).
 	 */
-	CachedSectorDevice(SectorDevice &device, uint32_t slots = MFS_BLOCK_CACHE_DEFAULT_SLOTS, bool writeThrough = false,
-	                   bool readAhead = false);
+	explicit CachedSectorDevice(SectorDevice &device, uint32_t slots = BLOCK_CACHE_DEFAULT_SLOTS,
+	                            bool writeThrough = false, bool readAhead = false);
 	/** Flushes dirty sectors. */
-	~CachedSectorDevice();
+	~CachedSectorDevice() override;
 	CachedSectorDevice(const CachedSectorDevice&) = delete;
 	CachedSectorDevice& operator=(const CachedSectorDevice&) = delete;
 
-	virtual md_error_t read(uint8_t* data, sector_t sector);
-	virtual md_error_t write(const uint8_t* data, sector_t sector);
-	virtual uint32_t getBytesPerSector() const;
+	md_error_t read(uint8_t* data, sector_t sector) override;
+	md_error_t write(const uint8_t* data, sector_t sector) override;
+	uint32_t getBytesPerSector() const override;
 
 	/** Write every dirty sector to the device, then flush the device. */
-	virtual md_error_t flush();
+	md_error_t flush() override;
 
 	/** Drop every cached sector, discarding dirty data (e.g. after a card swap). */
 	void invalidate();
