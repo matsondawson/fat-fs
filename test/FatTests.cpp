@@ -6,6 +6,7 @@
  */
 
 #include "TestEnv.h"
+#include "CountingSectorDevice.h"
 
 using namespace Mfs;
 
@@ -173,6 +174,35 @@ static void test_large_single_read() {
 	CHECK_OK(file.read(buffer, sizeof(buffer), n));
 	CHECK_EQ(n, sizeof(buffer));
 	CHECK(matchesPattern(buffer, sizeof(buffer), 0, 3));
+}
+
+static void test_chain_reads_each_fat_sector_once() {
+	// 20 one-sector clusters: their FAT entries are all in one FAT sector
+	Disk disk(VOLUME_SECTORS);
+	CountingSectorDevice counting(disk.device());
+	Volume format; // only for its sizes
+	CHECK_OK(format.error);
+	const sector_t sectors = format.disk.ram.getSectorCount();
+	CHECK_OK(formatFat(counting, sectors, g_config.format, 1, "TEST"));
+	{
+		Fat fat(counting);
+		CHECK_OK(fat.mount());
+		CHECK_OK(writeFile(fat, "/", "CHAIN.BIN", 20 * CLUSTER_BYTES, 4, CLUSTER_BYTES));
+	}
+	Fat fat(counting);
+	CHECK_OK(fat.mount());
+	File file(fat);
+	CHECK_OK(file.open("/", "CHAIN.BIN"));
+	counting.resetCounts();
+	static uint8_t buffer[CLUSTER_BYTES];
+	for (uint32_t i = 0; i < 20; i++) {
+		uint32_t n;
+		CHECK_OK(file.read(buffer, sizeof(buffer), n));
+		CHECK_EQ(n, sizeof(buffer));
+		CHECK(matchesPattern(buffer, n, i * CLUSTER_BYTES, 4));
+	}
+	// 20 data sectors and the one FAT sector, not one FAT read per cluster
+	CHECK_EQ(counting.reads, 21);
 }
 
 static void test_cluster_boundaries() {
@@ -691,6 +721,7 @@ static void test_name_listing_format() {
 
 const TestFramework::TestCase FAT_TESTS[] = {
 	{ "format_and_mount", test_format_and_mount },
+	{ "chain_reads_each_fat_sector_once", test_chain_reads_each_fat_sector_once },
 	{ "format_rejects_small_volume", test_format_rejects_small_volume },
 	{ "mount_unformatted_fails", test_mount_unformatted_fails },
 	{ "short_names", test_short_names },

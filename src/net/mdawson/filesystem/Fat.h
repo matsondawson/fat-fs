@@ -29,7 +29,6 @@ enum class FatFormat {
 	FAT32
 };
 
-class FatEntryReader;
 class Sector;
 class File;
 
@@ -88,6 +87,13 @@ private:
 	 * next starts.
 	 */
 	std::unique_ptr<uint8_t[]> m_buffer;
+	/**
+	 * The sector of the first FAT that m_buffer holds, unchanged since it was read
+	 * or written, or NO_SECTOR. Following a cluster chain then reads each FAT
+	 * sector once, rather than again at every cluster, which on an SD card would
+	 * also break up a multiple block read of the file's data.
+	 */
+	sector_t m_bufferSector;
 
 	/** Files open on this volume, linked through File::m_nextOpen. */
 	File *m_openFiles;
@@ -105,8 +111,12 @@ private:
 	bool isDataCluster(cluster_t cluster) const;
 	/** Where an access within a cluster starts. */
 	MFS_NODISCARD md_error_t locate(cluster_t cluster, uint32_t offset, uint32_t dataSize, sector_t &sector) const;
-	/** Read the FAT entry for cluster (which must be in range) through reader. */
-	MFS_NODISCARD md_error_t readEntry(FatEntryReader &reader, cluster_t cluster, cluster_t &value);
+	/** m_buffer, for anything but a FAT sector. */
+	uint8_t *otherBuffer();
+	/** Read a sector of the first FAT into m_buffer, unless it is there already. */
+	MFS_NODISCARD md_error_t loadFatSector(Sector &sector, sector_t fatSector);
+	/** Read the FAT entry for cluster (which must be in range). */
+	MFS_NODISCARD md_error_t readEntry(cluster_t cluster, cluster_t &value);
 	/** Write a FAT sector to every FAT copy. */
 	MFS_NODISCARD md_error_t writeFatSector(Sector &sector, sector_t sectorInFirstFat);
 
