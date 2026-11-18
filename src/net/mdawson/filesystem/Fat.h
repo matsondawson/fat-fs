@@ -82,18 +82,20 @@ private:
 	FatFormat m_format;
 
 	/**
-	 * The one sector buffer every operation on the volume works in, allocated
-	 * when it is mounted. No two uses overlap: each finishes with it before the
-	 * next starts.
+	 * The sector buffer for everything but the FAT (partial sector reads and
+	 * writes, directories, mounting), allocated when the volume is mounted. No
+	 * two uses overlap: each finishes with it before the next starts.
 	 */
 	std::unique_ptr<uint8_t[]> m_buffer;
 	/**
-	 * The sector of the first FAT that m_buffer holds, unchanged since it was read
-	 * or written, or NO_SECTOR. Following a cluster chain then reads each FAT
-	 * sector once, rather than again at every cluster, which on an SD card would
-	 * also break up a multiple block read of the file's data.
+	 * The last FAT sector read or written, so that following a cluster chain
+	 * reads each FAT sector once rather than at every cluster (which on an SD
+	 * card would also break up a multiple block read of the file's data).
+	 * Separate from m_buffer so that other work doesn't lose it.
 	 */
-	sector_t m_bufferSector;
+	std::unique_ptr<uint8_t[]> m_fatBuffer;
+	/** The sector of the first FAT in m_fatBuffer, or NO_SECTOR. */
+	sector_t m_fatBufferSector;
 
 	/** Files open on this volume, linked through File::m_nextOpen. */
 	File *m_openFiles;
@@ -111,12 +113,12 @@ private:
 	bool isDataCluster(cluster_t cluster) const;
 	/** Where an access within a cluster starts. */
 	MFS_NODISCARD md_error_t locate(cluster_t cluster, uint32_t offset, uint32_t dataSize, sector_t &sector) const;
-	/** m_buffer, for anything but a FAT sector. */
-	uint8_t *otherBuffer();
-	/** Read a sector of the first FAT into m_buffer, unless it is there already. */
+	/** Read a sector of the first FAT into m_fatBuffer, unless it is there already. */
 	MFS_NODISCARD md_error_t loadFatSector(Sector &sector, sector_t fatSector);
 	/** Read the FAT entry for cluster (which must be in range). */
 	MFS_NODISCARD md_error_t readEntry(cluster_t cluster, cluster_t &value);
+	/** Whether cluster's FAT entry is entirely in m_fatBuffer. */
+	bool entryIsLoaded(cluster_t cluster) const;
 	/** Write a FAT sector to every FAT copy. */
 	MFS_NODISCARD md_error_t writeFatSector(Sector &sector, sector_t sectorInFirstFat);
 
@@ -138,6 +140,12 @@ public:
 
 	/** Get the FAT entry (next cluster) for a cluster. */
 	MFS_NODISCARD md_error_t getEntry(cluster_t cluster, cluster_t &next);
+	/**
+	 * The same, and run: how many clusters after next are known, from the FAT
+	 * sector already read, to follow one after another (next + 1, next + 2, ...,
+	 * next + run), so a chain can move through them without looking them up.
+	 */
+	MFS_NODISCARD md_error_t getEntry(cluster_t cluster, cluster_t &next, uint32_t &run);
 	/** Set the FAT entry for a cluster, in every FAT copy. */
 	MFS_NODISCARD md_error_t setEntry(cluster_t cluster, cluster_t next);
 

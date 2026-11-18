@@ -205,6 +205,94 @@ static void test_chain_reads_each_fat_sector_once() {
 	CHECK_EQ(counting.reads, 21);
 }
 
+// A RAM disk formatted as the pass's volume, seen through a CountingSectorDevice
+struct CountedVolume {
+	Disk disk;
+	CountingSectorDevice counting;
+	md_error_t error;
+
+	CountedVolume() : disk(VOLUME_SECTORS), counting(disk.device()), error(0) {
+		Volume sizes; // only for the sector count of this pass's format
+		error = sizes.error ? sizes.error
+		                    : formatFat(counting, sizes.disk.ram.getSectorCount(), g_config.format, 1, "TEST");
+	}
+};
+
+static void test_small_reads_keep_the_fat_sector() {
+	// Two files written a cluster each in turn, so neither's clusters follow one
+	// another and every cluster needs a FAT lookup, all in the first FAT sector
+	CountedVolume v;
+	CHECK_OK(v.error);
+	static uint8_t buffer[CLUSTER_BYTES];
+	{
+		Fat fat(v.counting);
+		CHECK_OK(fat.mount());
+		File a(fat), b(fat);
+		CHECK_OK(a.open("/", "A.BIN", true));
+		CHECK_OK(b.open("/", "B.BIN", true));
+		for (uint32_t i = 0; i < 20; i++) {
+			fillPattern(buffer, sizeof(buffer), i * CLUSTER_BYTES, 1);
+			CHECK_OK(a.write(buffer, sizeof(buffer)));
+			fillPattern(buffer, sizeof(buffer), i * CLUSTER_BYTES, 2);
+			CHECK_OK(b.write(buffer, sizeof(buffer)));
+		}
+	}
+	Fat fat(v.counting);
+	CHECK_OK(fat.mount());
+	File file(fat);
+	CHECK_OK(file.open("/", "A.BIN"));
+	v.counting.resetCounts();
+	// 100 bytes at a time: every read goes through the volume's sector buffer
+	uint32_t done = 0;
+	for (;;) {
+		uint32_t n;
+		CHECK_OK(file.read(buffer, 100, n));
+		if (n == 0) break;
+		CHECK(matchesPattern(buffer, n, done, 1));
+		done += n;
+	}
+	CHECK_EQ(done, 20 * CLUSTER_BYTES);
+	// 103 reads, 19 of them crossing into the next sector: 122 data sector reads,
+	// and the FAT sector once, not at each of the 19 clusters
+	CHECK_EQ(v.counting.reads, 123);
+}
+
+static void test_files_read_in_turn_skip_the_fat() {
+	if (g_config.ramDiskSectors < 1024) {
+		TestFramework::skip("needs a RAM disk of at least 1024 sectors");
+		return;
+	}
+	// Two files of 300 clusters each, one after the other on the disk, so their
+	// FAT entries are in different FAT sectors
+	CountedVolume v;
+	CHECK_OK(v.error);
+	const uint32_t clusters = 300;
+	{
+		Fat fat(v.counting);
+		CHECK_OK(fat.mount());
+		CHECK_OK(writeFile(fat, "/", "A.BIN", clusters * CLUSTER_BYTES, 1, CLUSTER_BYTES));
+		CHECK_OK(writeFile(fat, "/", "B.BIN", clusters * CLUSTER_BYTES, 2, CLUSTER_BYTES));
+	}
+	Fat fat(v.counting);
+	CHECK_OK(fat.mount());
+	File a(fat), b(fat);
+	CHECK_OK(a.open("/", "A.BIN"));
+	CHECK_OK(b.open("/", "B.BIN"));
+	v.counting.resetCounts();
+	static uint8_t buffer[CLUSTER_BYTES];
+	for (uint32_t i = 0; i < clusters; i++) {
+		uint32_t n;
+		CHECK_OK(a.read(buffer, sizeof(buffer), n));
+		CHECK(n == sizeof(buffer) && matchesPattern(buffer, n, i * CLUSTER_BYTES, 1));
+		CHECK_OK(b.read(buffer, sizeof(buffer), n));
+		CHECK(n == sizeof(buffer) && matchesPattern(buffer, n, i * CLUSTER_BYTES, 2));
+	}
+	// Each file looks up the FAT once per FAT sector its chain covers (a few),
+	// not at each of its 299 cluster boundaries
+	CHECK(v.counting.reads >= 2 * clusters);
+	CHECK(v.counting.reads <= 2 * clusters + 12);
+}
+
 static void test_cluster_boundaries() {
 	Volume v;
 	CHECK_OK(v.error);
@@ -722,6 +810,8 @@ static void test_name_listing_format() {
 const TestFramework::TestCase FAT_TESTS[] = {
 	{ "format_and_mount", test_format_and_mount },
 	{ "chain_reads_each_fat_sector_once", test_chain_reads_each_fat_sector_once },
+	{ "small_reads_keep_the_fat_sector", test_small_reads_keep_the_fat_sector },
+	{ "files_read_in_turn_skip_the_fat", test_files_read_in_turn_skip_the_fat },
 	{ "format_rejects_small_volume", test_format_rejects_small_volume },
 	{ "mount_unformatted_fails", test_mount_unformatted_fails },
 	{ "short_names", test_short_names },
