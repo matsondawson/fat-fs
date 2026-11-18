@@ -151,7 +151,7 @@ MFS_NAMESPACE_BEGIN
 
 	File::File(Fat& drive, const char* path, const char* name, bool create)
 		: m_drive(&drive), m_open(false), m_entryDirty(false), m_entryCluster(0), m_entryClusterOffset(0),
-		  m_longNameCluster(0), m_longNameOffset(0), m_longNameEntries(0), m_fileChain(drive) {
+		  m_longNameCluster(0), m_longNameOffset(0), m_longNameEntries(0), m_fileChain(drive), m_nextOpen(0) {
 		mdError = 0;
 		memset(&m_directoryEntry, 0, sizeof(m_directoryEntry));
 
@@ -168,6 +168,13 @@ MFS_NAMESPACE_BEGIN
 			if (dl.directoryEntry()->DIR_Attr & ATTR_DIRECTORY) {
 				mdError = File_isDirectory;
 				return;
+			}
+			// A file is known by where its entry is, whichever name opened it
+			for (File *open = drive.m_openFiles; open; open = open->m_nextOpen) {
+				if (open->m_entryCluster == dl.cluster() && open->m_entryClusterOffset == dl.clusterOffset()) {
+					mdError = File_alreadyOpen;
+					return;
+				}
 			}
 		} else {
 			if (mdError) return;
@@ -189,6 +196,19 @@ MFS_NAMESPACE_BEGIN
 		m_longNameEntries = dl.longNameEntryCount();
 		m_fileChain.init(entryFirstCluster(m_directoryEntry));
 		m_open = true;
+		m_nextOpen = drive.m_openFiles;
+		drive.m_openFiles = this;
+	}
+
+	void File::unlinkOpen() {
+		for (File **link = &m_drive->m_openFiles; *link; link = &(*link)->m_nextOpen) {
+			if (*link == this) {
+				*link = m_nextOpen;
+				break;
+			}
+		}
+		m_nextOpen = 0;
+		m_open = false;
 	}
 
 	File::~File() {
@@ -273,7 +293,7 @@ MFS_NAMESPACE_BEGIN
 			return;
 		}
 		flush();
-		m_open = false;
+		unlinkOpen();
 	}
 
 	void File::remove() {
@@ -288,7 +308,7 @@ MFS_NAMESPACE_BEGIN
 		if (mdError) return;
 		m_directoryEntry.DIR_Name[0] = DIR_ENTRY_DELETED;
 		writeDirectoryEntry();
-		m_open = false;
+		unlinkOpen();
 	}
 
 	void File::write(const uint8_t* data, uint32_t bytesToWrite) {

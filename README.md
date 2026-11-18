@@ -290,7 +290,8 @@ a new cluster chain is never left unreferenced. Data is written to the card by:
 
 - `File::flush()`: stores the file's directory entry and flushes the device.
 - `File::close()` and the `File` destructor: flush, then close.
-- `Fat::flush()`, and destroying the `Fat` object (unmount).
+- Destroying the `Fat` object (unmount), which closes any `File`s still open
+  on it. `Fat::flush()` flushes the device but not the sizes of open files.
 - Destroying the `CachedSectorDevice`.
 
 There is no timer. The driver has no clock and is not thread safe, so it must
@@ -365,8 +366,9 @@ storage from your toolchain and RTOS; on bare metal leave it off.
   subdirectories grow as usual. A long name takes several entries.
 - Long names compare case-insensitively for ASCII letters only. Windows also
   ignores case for other alphabets.
-- Two `File` objects on the same file don't share state: one won't see a size
-  change made by the other until that one flushes.
+- A file can be open through only one `File` at a time; opening it again, by
+  any of its names, fails with `File_alreadyOpen` until the first is closed.
+  The check is per `Fat`, so don't mount the same volume twice.
 - The FSInfo free-cluster count is marked "unknown" on the first change rather
   than kept up to date, as the spec allows. fsck.fat mentions this but doesn't
   treat it as an error.

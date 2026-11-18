@@ -227,6 +227,11 @@ static void test_create_and_open_long_name() {
 	CHECK_OK();
 	CHECK_EQ(again.length(), 1000);
 	CHECK_EQ(countEntries(*v.fat, "/"), 1);
+
+	// Open once only, whether by long name or short alias
+	File byAlias(*v.fat, "/", "MYLONG~1.TXT");
+	CHECK_EQ(mdError, File_alreadyOpen);
+	mdError = 0;
 }
 
 static void test_alias_numbering() {

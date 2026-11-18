@@ -1,6 +1,7 @@
 #include "Fat.h"
 
 #include "net/mdawson/filesystem/FatStructures.h"
+#include "net/mdawson/filesystem/File.h"
 #include "net/mdawson/filesystem/GlobalError.h"
 #include "net/mdawson/filesystem/Sector.h"
 
@@ -33,7 +34,7 @@ private:
 
 Fat::Fat(SectorDevice &partition)
 	: m_partition(&partition), m_infoSector(0), m_mounted(false), m_fsInfoInvalidated(false),
-	  m_rootCluster(0), m_rootSector(0) {
+	  m_openFiles(0), m_rootCluster(0), m_rootSector(0) {
 	md_error_t error = init();
 	mdError = error;
 	m_mounted = (error == 0);
@@ -43,6 +44,10 @@ Fat::~Fat() {
 	if (m_mounted) {
 		// Errors can't be reported from a destructor; keep mdError as it was.
 		md_error_t saved = mdError;
+		// close() unlinks each File
+		while (m_openFiles) {
+			m_openFiles->close();
+		}
 		m_partition->flush();
 		mdError = saved;
 	}
