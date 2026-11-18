@@ -74,9 +74,23 @@ set to:
   names in both directions. It only runs when dosfstools and mtools are
   installed (`pacman -S dosfstools mtools`).
 
-There is no CI service: run the tests locally before merging, with gcc and with
-clang (`CC=clang CXX=clang++`, `-DCMAKE_COMPILE_WARNING_AS_ERROR=ON` for both),
-and build the Pico firmware and the Cortex-M library as below.
+### Before merging into main
+
+There is no CI service; the tests run on your machine. Pull requests merge into
+`main` only after `scripts/local-tests.sh` has passed on their latest commit:
+
+```sh
+git push                       # the PR branch
+scripts/local-tests.sh         # a few minutes; reports "local-tests" to GitHub
+```
+
+The script runs the host tests with gcc and clang (warnings as errors, image
+cross-checks included), builds the library for Cortex-M0+ and M4 in every option
+combination, and builds the Pico and Pico 2 firmware. It needs a clean working
+tree, and reports the result as the `local-tests` status of the commit. Branch
+protection on `main` requires that status, for administrators too, and requires
+the branch to be up to date with `main`. So after a new push, or when `main` moves
+on, run it again. `--no-report` runs the tests without reporting.
 
 Nothing touches a real drive. To try the driver by hand, use an image:
 
