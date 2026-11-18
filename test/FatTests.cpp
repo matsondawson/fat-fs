@@ -150,9 +150,9 @@ static void test_multi_cluster_file() {
 	uint32_t freeBefore = freeClusters(*v.fat);
 	const uint32_t length = 5000; // 10 clusters, written and read in uneven chunks
 	CHECK_OK(writeFile(*v.fat, "/", "BIG.BIN", length, 7, 700));
-	CHECK(verifyFile(*v.fat, "/", "BIG.BIN", length, 7, 333));
-	CHECK(verifyFile(*v.fat, "/", "BIG.BIN", length, 7, 512));
-	CHECK(verifyFile(*v.fat, "/", "BIG.BIN", length, 7, 1));
+	CHECK_OK(verifyFile(*v.fat, "/", "BIG.BIN", length, 7, 333));
+	CHECK_OK(verifyFile(*v.fat, "/", "BIG.BIN", length, 7, 512));
+	CHECK_OK(verifyFile(*v.fat, "/", "BIG.BIN", length, 7, 1));
 	CHECK_EQ(freeClusters(*v.fat), freeBefore - 10);
 }
 
@@ -192,7 +192,7 @@ static void test_cluster_boundaries() {
 		CHECK_EQ(freeClusters(*v.fat), freeBefore - 3);
 		CHECK_EQ(file.length(), sizeof(buffer));
 	}
-	CHECK(verifyFile(*v.fat, "/", "EDGE.BIN", sizeof(buffer), 9, CLUSTER_BYTES));
+	CHECK_OK(verifyFile(*v.fat, "/", "EDGE.BIN", sizeof(buffer), 9, CLUSTER_BYTES));
 
 	// Seeking to a cluster boundary and reading across it.
 	File file(*v.fat);
@@ -256,7 +256,7 @@ static void test_append_after_reopen() {
 		fillPattern(buffer, sizeof(buffer), length, 2);
 		CHECK_OK(file.write(buffer, sizeof(buffer)));
 	}
-	CHECK(verifyFile(*v.fat, "/", "LOG.TXT", 1900, 2, 256));
+	CHECK_OK(verifyFile(*v.fat, "/", "LOG.TXT", 1900, 2, 256));
 }
 
 static void test_truncate() {
@@ -273,7 +273,7 @@ static void test_truncate() {
 		CHECK_EQ(file.length(), 1000);
 	}
 	CHECK_EQ(freeClusters(*v.fat), freeAtStart - 2);
-	CHECK(verifyFile(*v.fat, "/", "TRUNC.BIN", 1000, 4, 100));
+	CHECK_OK(verifyFile(*v.fat, "/", "TRUNC.BIN", 1000, 4, 100));
 
 	// Truncate at an exact cluster boundary keeps exactly that many clusters.
 	{
@@ -293,7 +293,7 @@ static void test_truncate() {
 	}
 	CHECK_EQ(freeClusters(*v.fat), freeAtStart);
 	CHECK_OK(writeFile(*v.fat, "/", "TRUNC.BIN", 600, 8, 600));
-	CHECK(verifyFile(*v.fat, "/", "TRUNC.BIN", 600, 8, 600));
+	CHECK_OK(verifyFile(*v.fat, "/", "TRUNC.BIN", 600, 8, 600));
 }
 
 static void test_remove() {
@@ -321,7 +321,7 @@ static void test_remove() {
 	CHECK_EQ(gone.open("/", "GONE.TXT"), File_fileNotFound);
 	CHECK_EQ(countEntries(*v.fat, "/"), 1);
 	CHECK_EQ(freeClusters(*v.fat), freeAtStart - 1);
-	CHECK(verifyFile(*v.fat, "/", "KEEP.TXT", 100, 1, 100));
+	CHECK_OK(verifyFile(*v.fat, "/", "KEEP.TXT", 100, 1, 100));
 
 	// The freed directory slot is reused.
 	File again(*v.fat);
@@ -346,7 +346,7 @@ static void test_directory_grows() {
 	CHECK_EQ(countEntries(*v.fat, "/"), fileCount);
 	for (int i = 0; i < fileCount; i++) {
 		snprintf(name, sizeof(name), "F%02d.TXT", i);
-		CHECK(verifyFile(*v.fat, "/", name, 10 + i, (uint32_t)i, 64));
+		CHECK_OK(verifyFile(*v.fat, "/", name, 10 + i, (uint32_t)i, 64));
 	}
 	// FAT32: 3 directory clusters (root's first one was already used) + 40 file clusters.
 	// The FAT12/16 root directory has room for 512 entries, so it takes no clusters.
@@ -362,16 +362,16 @@ static void test_subdirectories() {
 	CHECK_EQ(makeDirectory(*v.fat, "/", "sub"), File_alreadyExists);
 
 	CHECK_OK(writeFile(*v.fat, "/SUB/DEEP", "NOTE.TXT", 1500, 11, 500));
-	CHECK(verifyFile(*v.fat, "/sub/deep", "note.txt", 1500, 11, 500));
+	CHECK_OK(verifyFile(*v.fat, "/sub/deep", "note.txt", 1500, 11, 500));
 	// The original API's 11 character path form still works.
-	CHECK(verifyFile(*v.fat, "/SUB        /DEEP       ", "NOTE    TXT", 1500, 11, 500));
+	CHECK_OK(verifyFile(*v.fat, "/SUB        /DEEP       ", "NOTE    TXT", 1500, 11, 500));
 
 	CHECK_EQ(countEntries(*v.fat, "/"), 1);          // SUB
 	CHECK_EQ(countEntries(*v.fat, "/SUB"), 3);       // . .. DEEP
 	CHECK_EQ(countEntries(*v.fat, "/SUB/DEEP"), 3);  // . .. NOTE.TXT
 
 	// ".." navigation, including back to the root (cluster 0 in "..").
-	CHECK(verifyFile(*v.fat, "/SUB/DEEP/../DEEP", "NOTE.TXT", 1500, 11, 500));
+	CHECK_OK(verifyFile(*v.fat, "/SUB/DEEP/../DEEP", "NOTE.TXT", 1500, 11, 500));
 	CHECK_EQ(countEntries(*v.fat, "/SUB/.."), 1);
 
 	DirectoryListing missing(*v.fat);
@@ -419,7 +419,7 @@ static void test_partition_table() {
 	CHECK_OK(again.open(Partition::primary(0)));
 	Fat fat(again);
 	CHECK_OK(fat.mount());
-	CHECK(verifyFile(fat, "/", "PART.TXT", 900, 6, 900));
+	CHECK_OK(verifyFile(fat, "/", "PART.TXT", 900, 6, 900));
 
 	// Out of range access is rejected by the partition.
 	CHECK_EQ(again.read(check, VOLUME_SECTORS), Partition_sectorOutOfRange);
@@ -437,14 +437,14 @@ static void test_whole_device_without_partition_table() {
 	Fat fat(whole);
 	CHECK_OK(fat.mount());
 	CHECK_OK(writeFile(fat, "/", "RAW.TXT", 50, 1, 50));
-	CHECK(verifyFile(fat, "/", "RAW.TXT", 50, 1, 50));
+	CHECK_OK(verifyFile(fat, "/", "RAW.TXT", 50, 1, 50));
 }
 
 static void test_device_errors_propagate() {
 	// A RAM disk that can hold very few sectors fills up: the error must surface.
 	Disk disk(VOLUME_SECTORS, 12);
 	CHECK_OK(formatFat32(disk.device(), VOLUME_SECTORS, 1));
-	disk.device().flush();
+	CHECK_OK(disk.device().flush());
 	Fat fat(disk.device());
 	CHECK_OK(fat.mount());
 	File file(fat);
@@ -480,9 +480,9 @@ static void test_multiple_open_files() {
 			fillPattern(chunk, sizeof(chunk), i * 200, 3); CHECK_OK(c.write(chunk, sizeof(chunk)));
 		}
 	}
-	CHECK(verifyFile(*v.fat, "/", "A.BIN", 2000, 1, 333));
-	CHECK(verifyFile(*v.fat, "/", "B.BIN", 2000, 2, 333));
-	CHECK(verifyFile(*v.fat, "/", "C.BIN", 2000, 3, 333));
+	CHECK_OK(verifyFile(*v.fat, "/", "A.BIN", 2000, 1, 333));
+	CHECK_OK(verifyFile(*v.fat, "/", "B.BIN", 2000, 2, 333));
+	CHECK_OK(verifyFile(*v.fat, "/", "C.BIN", 2000, 3, 333));
 }
 
 static void test_file_opens_once() {
@@ -576,7 +576,7 @@ static void test_large_clusters() {
 		uint32_t freeBefore = freeClusters(*v.fat);
 		uint32_t length = spc * 512u + 700; // spans a cluster boundary
 		CHECK_OK(writeFile(*v.fat, "/", "BIG.BIN", length, spc, 700));
-		CHECK(verifyFile(*v.fat, "/", "BIG.BIN", length, spc, 512));
+		CHECK_OK(verifyFile(*v.fat, "/", "BIG.BIN", length, spc, 512));
 		CHECK_EQ(freeClusters(*v.fat), freeBefore - 2);
 		File file(*v.fat);
 		CHECK_OK(file.open("/", "BIG.BIN"));
@@ -597,8 +597,8 @@ static void test_remount_persists_everything() {
 	CHECK_OK(writeFile(*v.fat, "/", "TWO.BIN", 10, 2, 10));
 	uint32_t freeBefore = freeClusters(*v.fat);
 	CHECK_OK(v.remount());
-	CHECK(verifyFile(*v.fat, "/DIR", "ONE.BIN", 3000, 1, 700));
-	CHECK(verifyFile(*v.fat, "/", "TWO.BIN", 10, 2, 10));
+	CHECK_OK(verifyFile(*v.fat, "/DIR", "ONE.BIN", 3000, 1, 700));
+	CHECK_OK(verifyFile(*v.fat, "/", "TWO.BIN", 10, 2, 10));
 	CHECK_EQ(freeClusters(*v.fat), freeBefore);
 }
 
@@ -655,7 +655,7 @@ static void test_deleted_first_character_name() {
 	CHECK_OK(v.error);
 	const char name[] = "\xE5" "AB.TXT";
 	CHECK_OK(writeFile(*v.fat, "/", name, 20, 1, 20));
-	CHECK(verifyFile(*v.fat, "/", name, 20, 1, 20));
+	CHECK_OK(verifyFile(*v.fat, "/", name, 20, 1, 20));
 	DirectoryListing dl(*v.fat);
 	CHECK_OK(dl.open("/"));
 	CHECK(dl.next());

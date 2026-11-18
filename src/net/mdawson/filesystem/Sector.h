@@ -31,8 +31,8 @@ public:
 	uint8_t *data() { return m_data; }
 	const uint8_t *data() const { return m_data; }
 
-	md_error_t read(sector_t sector);
-	md_error_t write(sector_t sector);
+	MFS_NODISCARD md_error_t read(sector_t sector);
+	MFS_NODISCARD md_error_t write(sector_t sector);
 };
 
 MFS_NAMESPACE_END

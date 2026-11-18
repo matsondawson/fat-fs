@@ -71,8 +71,8 @@ private:
 
 	int32_t findSlot(sector_t sector) const;
 	/** Find a slot to (re)use, writing back its dirty contents. slot is -1 on failure. */
-	md_error_t claimSlot(int32_t &slot);
-	md_error_t writeBack(uint32_t slot);
+	MFS_NODISCARD md_error_t claimSlot(int32_t &slot);
+	MFS_NODISCARD md_error_t writeBack(uint32_t slot);
 	uint8_t *slotData(uint32_t slot) const;
 	/** Read sector into the cache if it isn't there, ignoring any error. */
 	void readAhead(sector_t sector);
@@ -91,12 +91,12 @@ public:
 	CachedSectorDevice(const CachedSectorDevice&) = delete;
 	CachedSectorDevice& operator=(const CachedSectorDevice&) = delete;
 
-	md_error_t read(uint8_t* data, sector_t sector) override;
-	md_error_t write(const uint8_t* data, sector_t sector) override;
+	MFS_NODISCARD md_error_t read(uint8_t* data, sector_t sector) override;
+	MFS_NODISCARD md_error_t write(const uint8_t* data, sector_t sector) override;
 	uint32_t getBytesPerSector() const override;
 
 	/** Write every dirty sector to the device, then flush the device. */
-	md_error_t flush() override;
+	MFS_NODISCARD md_error_t flush() override;
 
 	/** Drop every cached sector, discarding dirty data (e.g. after a card swap). */
 	void invalidate();

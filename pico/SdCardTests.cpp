@@ -22,16 +22,16 @@ int g_failures;
 class WriteGuard : public SectorDevice {
 public:
 	WriteGuard(SectorDevice &device, bool allowWrites) : m_device(device), m_allowWrites(allowWrites), m_blocked(0) {}
-	virtual md_error_t read(uint8_t *data, sector_t sector) { return m_device.read(data, sector); }
-	virtual md_error_t write(const uint8_t *data, sector_t sector) {
+	md_error_t read(uint8_t *data, sector_t sector) override { return m_device.read(data, sector); }
+	md_error_t write(const uint8_t *data, sector_t sector) override {
 		if (!m_allowWrites) {
 			m_blocked++;
 			return SectorDevice_notWritable;
 		}
 		return m_device.write(data, sector);
 	}
-	virtual uint32_t getBytesPerSector() const { return m_device.getBytesPerSector(); }
-	virtual md_error_t flush() { return m_device.flush(); }
+	uint32_t getBytesPerSector() const override { return m_device.getBytesPerSector(); }
+	md_error_t flush() override { return m_device.flush(); }
 	uint32_t blockedWrites() const { return m_blocked; }
 
 private:
@@ -263,7 +263,7 @@ void streamTests(PicoSdCard &card, sector_t start) {
 		printf("    512 KB, %lu us work per sector: %lu KB/s without read ahead, %lu KB/s with\n",
 		       (unsigned long)workUs, (unsigned long)slow, (unsigned long)fast);
 	}
-	card.flush();
+	check(card.flush() == 0, "stream: flush at the end");
 }
 
 } // namespace
@@ -399,7 +399,7 @@ int runSdCardTests(PicoSdCard &card, bool write) {
 		writeTest(*mounted);
 	}
 
-	mounted->flush();
+	check(mounted->flush() == 0, "flush the volume");
 	if (!write) {
 		check(guard.blockedWrites() == 0, "read only run tried no writes");
 	}

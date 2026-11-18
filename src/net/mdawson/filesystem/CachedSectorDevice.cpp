@@ -19,7 +19,8 @@ CachedSectorDevice::CachedSectorDevice(SectorDevice &device, uint32_t slots, boo
 }
 
 CachedSectorDevice::~CachedSectorDevice() {
-	flush();
+	// Errors can't be reported from a destructor; call flush() first to see them.
+	(void)flush();
 }
 
 void CachedSectorDevice::invalidate() {

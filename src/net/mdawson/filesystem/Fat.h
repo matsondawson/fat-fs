@@ -98,17 +98,17 @@ private:
 	/** First sector of the FAT12/FAT16 fixed root directory. */
 	sector_t m_rootSector;
 
-	md_error_t init();
+	MFS_NODISCARD md_error_t init();
 	sector_t clusterToSector(cluster_t cluster) const;
 	void invalidateFsInfo();
 	bool isFixedRoot(cluster_t cluster) const;
 	bool isDataCluster(cluster_t cluster) const;
 	/** Where an access within a cluster starts. */
-	md_error_t locate(cluster_t cluster, uint32_t offset, uint32_t dataSize, sector_t &sector) const;
+	MFS_NODISCARD md_error_t locate(cluster_t cluster, uint32_t offset, uint32_t dataSize, sector_t &sector) const;
 	/** Read the FAT entry for cluster (which must be in range) through reader. */
-	md_error_t readEntry(FatEntryReader &reader, cluster_t cluster, cluster_t &value);
+	MFS_NODISCARD md_error_t readEntry(FatEntryReader &reader, cluster_t cluster, cluster_t &value);
 	/** Write a FAT sector to every FAT copy. */
-	md_error_t writeFatSector(Sector &sector, sector_t sectorInFirstFat);
+	MFS_NODISCARD md_error_t writeFatSector(Sector &sector, sector_t sectorInFirstFat);
 
 public:
 	/** A volume on partition; call mount() before using it. */
@@ -123,28 +123,28 @@ public:
 	 * Fails with a Fat_invalidDriveFormat_ code, Fat_Fat12FormatUnsupported or
 	 * Fat_Fat16FormatUnsupported, or a device error.
 	 */
-	md_error_t mount();
+	MFS_NODISCARD md_error_t mount();
 	bool isMounted() const;
 
 	/** Get the FAT entry (next cluster) for a cluster. */
-	md_error_t getEntry(cluster_t cluster, cluster_t &next);
+	MFS_NODISCARD md_error_t getEntry(cluster_t cluster, cluster_t &next);
 	/** Set the FAT entry for a cluster, in every FAT copy. */
-	md_error_t setEntry(cluster_t cluster, cluster_t next);
+	MFS_NODISCARD md_error_t setEntry(cluster_t cluster, cluster_t next);
 
 	/**
 	 * Allocate a free cluster, mark it end-of-chain, zero its contents and,
 	 * if fromCluster is non-zero, link fromCluster to it.
 	 */
-	md_error_t allocateCluster(cluster_t fromCluster, cluster_t &newCluster);
+	MFS_NODISCARD md_error_t allocateCluster(cluster_t fromCluster, cluster_t &newCluster);
 
 	/** Free every cluster of the chain starting at firstCluster. */
-	md_error_t freeChain(cluster_t firstCluster);
+	MFS_NODISCARD md_error_t freeChain(cluster_t firstCluster);
 
 	/** Flush the underlying device (e.g. a write-back cache). */
-	md_error_t flush();
+	MFS_NODISCARD md_error_t flush();
 
 	/** Count free clusters by scanning the FAT. */
-	md_error_t countFreeClusters(uint32_t &count);
+	MFS_NODISCARD md_error_t countFreeClusters(uint32_t &count);
 
 	bool isEndOfClusterChain(cluster_t cluster) const;
 	cluster_t getRootDirectoryCluster() const;
@@ -158,13 +158,13 @@ public:
 	/**
 	 * Write within a single cluster. offset + dataSize must not exceed the cluster size.
 	 */
-	md_error_t write(cluster_t cluster, uint32_t offset, const uint8_t *data, uint32_t dataSize);
+	MFS_NODISCARD md_error_t write(cluster_t cluster, uint32_t offset, const uint8_t *data, uint32_t dataSize);
 
 	/**
 	 * Read within a single cluster: all dataSize bytes, or an error.
 	 * offset + dataSize must not exceed the cluster size.
 	 */
-	md_error_t read(cluster_t cluster, uint32_t offset, uint8_t *data, uint32_t dataSize);
+	MFS_NODISCARD md_error_t read(cluster_t cluster, uint32_t offset, uint8_t *data, uint32_t dataSize);
 };
 
 MFS_NAMESPACE_END

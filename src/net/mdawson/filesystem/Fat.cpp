@@ -47,9 +47,9 @@ Fat::~Fat() {
 	if (m_mounted) {
 		// Errors can't be reported from a destructor. close() unlinks each File.
 		while (m_openFiles) {
-			m_openFiles->close();
+			(void)m_openFiles->close();
 		}
-		m_partition->flush();
+		(void)m_partition->flush();
 	}
 }
 
@@ -502,7 +502,8 @@ void Fat::invalidateFsInfo() {
 	}
 	writeLe32(info + offsetof(FSInfo, FSI_Free_Count), 0xFFFFFFFFu);
 	writeLe32(info + offsetof(FSInfo, FSI_Nxt_Free), 0xFFFFFFFFu);
-	sector.write(m_infoSector);
+	// Only a hint: if it can't be marked unknown, fsck.fat corrects it
+	(void)sector.write(m_infoSector);
 }
 
 md_error_t Fat::flush() {

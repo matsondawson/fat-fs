@@ -28,7 +28,7 @@ private:
 	cluster_t m_currentCluster;
 
 	/** Move to the next cluster, allocating one if allowed and needed. moved is false at the end. */
-	md_error_t advance(bool allocate, bool &moved);
+	MFS_NODISCARD md_error_t advance(bool allocate, bool &moved);
 	/** Size of the current cluster (the FAT12/16 fixed root directory is one large one). */
 	uint32_t currentClusterBytes() const;
 
@@ -44,7 +44,7 @@ public:
 	uint32_t clusterOffset() const;
 
 	/** Go to the next cluster. moved is false if there are no more clusters. */
-	md_error_t nextCluster(bool &moved);
+	MFS_NODISCARD md_error_t nextCluster(bool &moved);
 
 	/** Back to the start of the chain. */
 	void reset();
@@ -53,16 +53,16 @@ public:
 	 * Seek to a byte position. Fails with Chain_seekExceedsChainLength if the chain
 	 * is shorter than position.
 	 */
-	md_error_t seek(uint32_t position);
+	MFS_NODISCARD md_error_t seek(uint32_t position);
 
 	/**
 	 * Free every cluster after the current one. If the cursor is at position 0 the
 	 * whole chain is freed and the chain becomes empty (firstCluster() == 0).
 	 */
-	md_error_t truncate();
+	MFS_NODISCARD md_error_t truncate();
 
 	/** Free the whole chain; it becomes empty. */
-	md_error_t freeAll();
+	MFS_NODISCARD md_error_t freeAll();
 
 	/**
 	 * Get current byte position in chain.
@@ -70,13 +70,13 @@ public:
 	uint32_t position() const;
 
 	/** Write at the cursor, extending the chain as needed. */
-	md_error_t write(const uint8_t *data, uint32_t bytesToWrite);
+	MFS_NODISCARD md_error_t write(const uint8_t *data, uint32_t bytesToWrite);
 
 	/**
 	 * Read at the cursor; stops at the end of the chain. bytesRead is set even
 	 * when an error stops the read part way.
 	 */
-	md_error_t read(uint8_t *data, uint32_t bytesToRead, uint32_t &bytesRead);
+	MFS_NODISCARD md_error_t read(uint8_t *data, uint32_t bytesToRead, uint32_t &bytesRead);
 };
 
 MFS_NAMESPACE_END

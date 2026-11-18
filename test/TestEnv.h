@@ -76,7 +76,7 @@ struct Volume {
 	Volume& operator=(const Volume&) = delete;
 
 	/** Unmount and mount again (flushing first). */
-	md_error_t remount();
+	MFS_NODISCARD md_error_t remount();
 };
 
 uint8_t pattern(uint32_t i, uint32_t seed);
@@ -84,12 +84,22 @@ void fillPattern(uint8_t *buffer, uint32_t length, uint32_t start, uint32_t seed
 bool matchesPattern(const uint8_t *buffer, uint32_t length, uint32_t start, uint32_t seed);
 
 /** Write length pattern bytes to a new (or replaced) file in chunks. */
-md_error_t writeFile(Fat &fat, const char *path, const char *name, uint32_t length, uint32_t seed, uint32_t chunk);
-/** Read a whole file in chunks and check it matches the pattern. */
-bool verifyFile(Fat &fat, const char *path, const char *name, uint32_t length, uint32_t seed, uint32_t chunk);
-/** Number of entries a DirectoryListing returns, or -1 on error. */
+MFS_NODISCARD md_error_t writeFile(Fat &fat, const char *path, const char *name, uint32_t length, uint32_t seed, uint32_t chunk);
+
+/** verifyFile's result when the file reads without error but its length or data is wrong. */
+constexpr md_error_t TEST_DATA_MISMATCH = 0x7E570001;
+
+/** Read a whole file in chunks and check it matches the pattern: 0, a driver error or TEST_DATA_MISMATCH. */
+MFS_NODISCARD md_error_t verifyFile(Fat &fat, const char *path, const char *name, uint32_t length, uint32_t seed, uint32_t chunk);
+
+/** Number of entries a DirectoryListing returns. */
+MFS_NODISCARD md_error_t countEntries(Fat &fat, const char *path, int &count);
+/** The same, or -1 on any error. */
 int countEntries(Fat &fat, const char *path);
+
 /** Number of used 32 byte slots (including long name entries) in a directory. */
+MFS_NODISCARD md_error_t countUsedSlots(Fat &fat, const char *path, int &count);
+/** The same, or -1 on any error. */
 int countUsedSlots(Fat &fat, const char *path);
 
 /** Deterministic pseudo random numbers (xorshift32). */

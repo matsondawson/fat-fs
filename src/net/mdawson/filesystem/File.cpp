@@ -206,7 +206,7 @@ MFS_NAMESPACE_BEGIN
 
 	File::~File() {
 		if (m_open) {
-			close();
+			(void)close();
 		}
 	}
 
@@ -761,7 +761,8 @@ MFS_NAMESPACE_BEGIN
 
 		md_error_t error = drive.write(cluster, 0, reinterpret_cast<const uint8_t*>(dots), sizeof(dots));
 		if (!error) error = parent.createEntry(name, ATTR_DIRECTORY, cluster);
-		if (error) drive.freeChain(cluster);
+		// Give the cluster back; the first error is the one to report
+		if (error) (void)drive.freeChain(cluster);
 		return error;
 	}
 
