@@ -78,6 +78,13 @@ private:
 
 	FatFormat_e m_format;
 
+	/**
+	 * The one sector buffer every operation on the volume works in, allocated
+	 * when it is mounted. No two uses overlap: each finishes with it before the
+	 * next starts.
+	 */
+	uint8_t *m_buffer;
+
 	/** Files open on this volume, linked through File::m_nextOpen. */
 	File *m_openFiles;
 	friend class File;
