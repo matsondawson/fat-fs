@@ -2,6 +2,8 @@
 
 #include "net/mdawson/filesystem/GlobalError.h"
 
+MFS_NAMESPACE_BEGIN
+
 Sector::Sector(SectorDevice &sectorDevice) {
 	m_sector = (sector_t)-1;
 	m_data = new uint8_t[SECTOR_SIZE];
@@ -39,3 +41,5 @@ md_error_t Sector::write(sector_t sector) {
 	m_sector = sector;
 	return m_sectorDevice->write(m_data, m_sector);
 }
+
+MFS_NAMESPACE_END

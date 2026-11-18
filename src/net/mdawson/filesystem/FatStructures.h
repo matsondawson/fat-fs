@@ -9,6 +9,8 @@
 
 #include "net/mdawson/common/Types.h"
 
+MFS_NAMESPACE_BEGIN
+
 #pragma pack(1)
 
 typedef struct // BPB_FAT16
@@ -287,11 +289,13 @@ typedef struct
 
 #pragma pack()
 
-#define FSI_LEAD_SIG  0x41615252u
-#define FSI_STRUC_SIG 0x61417272u
-#define FSI_TRAIL_SIG 0xAA550000u
+const uint32_t FSI_LEAD_SIG = 0x41615252u;
+const uint32_t FSI_STRUC_SIG = 0x61417272u;
+const uint32_t FSI_TRAIL_SIG = 0xAA550000u;
 
 static_assert(sizeof(BPB_t) == 90, "BPB_t must match the on-disk layout");
 static_assert(sizeof(FSInfo_t) == 512, "FSInfo_t must be one sector");
+
+MFS_NAMESPACE_END
 
 #endif

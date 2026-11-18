@@ -6,6 +6,8 @@
 
 #include <string.h>
 
+MFS_NAMESPACE_BEGIN
+
 #define FREE_CLUSTER 0
 #define FAT32_ENTRY_MASK 0x0FFFFFFFu
 
@@ -696,3 +698,5 @@ uint32_t Fat::read(cluster_t cluster, uint32_t offset, uint8_t *data, uint32_t d
 	}
 	return bytesRead;
 }
+
+MFS_NAMESPACE_END

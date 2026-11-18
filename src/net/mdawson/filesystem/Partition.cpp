@@ -3,6 +3,8 @@
 #include "net/mdawson/filesystem/Sector.h"
 #include "net/mdawson/filesystem/GlobalError.h"
 
+MFS_NAMESPACE_BEGIN
+
 #pragma pack(1)
 
 typedef struct // Partition entry
@@ -120,3 +122,5 @@ uint32_t Partition::getBytesPerSector() const {
 md_error_t Partition::flush() {
 	return m_sectorDevice->flush();
 }
+
+MFS_NAMESPACE_END

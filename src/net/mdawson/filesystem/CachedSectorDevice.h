@@ -3,6 +3,8 @@
 
 #include "net/mdawson/filesystem/SectorDevice.h"
 
+MFS_NAMESPACE_BEGIN
+
 #ifdef MFS_BLOCK_CACHE
 
 /** Default number of cached sectors: 4 x 512 bytes = 2KB, sensible for a Pico. */
@@ -108,5 +110,7 @@ public:
 };
 
 #endif // MFS_BLOCK_CACHE
+
+MFS_NAMESPACE_END
 
 #endif

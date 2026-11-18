@@ -48,7 +48,7 @@ int main() {
 		sleep_ms(100);
 	}
 
-	PicoSdCard card(FAT_PICO_SD_SPI ? spi1 : spi0, FAT_PICO_SD_SCK, FAT_PICO_SD_MOSI, FAT_PICO_SD_MISO,
+	Mfs::PicoSdCard card(FAT_PICO_SD_SPI ? spi1 : spi0, FAT_PICO_SD_SCK, FAT_PICO_SD_MOSI, FAT_PICO_SD_MISO,
 	                FAT_PICO_SD_CS, FAT_PICO_SD_HZ);
 	card.setCardDetect(FAT_PICO_SD_DETECT);
 

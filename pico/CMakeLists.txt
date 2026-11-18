@@ -49,11 +49,11 @@ set(FAT_PICO_SD_HZ 25000000 CACHE STRING "SD card SPI clock in Hz")
 option(FAT_PICO_SD_WRITE_TEST "Also create, check and delete FATTEST.TMP on the SD card" OFF)
 
 # The driver library, its portable test suite and the Pico SD card driver
-# (fat_pico_sd) from the repository root.
+# (fat::pico_sd) from the repository root.
 add_subdirectory(.. fat)
 
 add_executable(fat_pico_tests main.cpp SdCardTests.cpp)
-target_link_libraries(fat_pico_tests PRIVATE fat_testsuite fat_pico_sd pico_stdlib)
+target_link_libraries(fat_pico_tests PRIVATE fat::testsuite fat::pico_sd pico_stdlib)
 target_compile_definitions(fat_pico_tests PRIVATE
   FAT_PICO_SD_SPI=${FAT_PICO_SD_SPI}
   FAT_PICO_SD_SCK=${FAT_PICO_SD_SCK}

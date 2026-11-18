@@ -5,6 +5,8 @@
 
 #include "hardware/spi.h"
 
+MFS_NAMESPACE_BEGIN
+
 /**
  * SD card in SPI mode on an RP2040 or RP2350, read and write.
  *
@@ -102,5 +104,7 @@ private:
 	md_error_t checkAccess(sector_t sector);
 	md_error_t fail(md_error_t error, const char *why);
 };
+
+MFS_NAMESPACE_END
 
 #endif

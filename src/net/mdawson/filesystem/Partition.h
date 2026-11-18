@@ -3,6 +3,8 @@
 
 #include "net/mdawson/filesystem/SectorDevice.h"
 
+MFS_NAMESPACE_BEGIN
+
 /**
  * A view of one partition of a device, using the MBR partition table.
  *
@@ -37,5 +39,7 @@ public:
 	sector_t getSectorOffset() const { return m_sectorOffset; }
 	sector_t getSectorCount() const { return m_sectorCount; }
 };
+
+MFS_NAMESPACE_END
 
 #endif

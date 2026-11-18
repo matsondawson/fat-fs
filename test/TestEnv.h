@@ -16,6 +16,8 @@
 #include "net/mdawson/filesystem/MemorySectorDevice.h"
 #include "net/mdawson/filesystem/Partition.h"
 
+using namespace Mfs;
+
 /** Smallest convenient FAT32 volume with 512 byte clusters (68882 clusters). */
 static const sector_t VOLUME_SECTORS = 70000;
 static const uint32_t CLUSTER_BYTES = 512;

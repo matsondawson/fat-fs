@@ -4,7 +4,8 @@
 #include "net/mdawson/filesystem/Fat.h"
 #include "net/mdawson/filesystem/SectorDevice.h"
 
-namespace Mfs {
+MFS_NAMESPACE_BEGIN
+
 	/**
 	 * Format sectors [0, sectorCount) of device as a FAT32 volume
 	 * (32 reserved sectors, 2 FATs, root directory in cluster 2).
@@ -35,6 +36,7 @@ namespace Mfs {
 	 */
 	void formatFat(SectorDevice &device, sector_t sectorCount, FatFormat_e format, uint8_t sectorsPerCluster = 0,
 	               const char *label = 0, uint32_t volumeId = 0x4D465321);
-}
+
+MFS_NAMESPACE_END
 
 #endif

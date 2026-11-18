@@ -3,6 +3,8 @@
 
 #include "net/mdawson/common/Types.h"
 
+MFS_NAMESPACE_BEGIN
+
 typedef uint32_t sector_t;
 
 /**
@@ -48,5 +50,7 @@ public:
 	 */
 	virtual md_error_t flush() { return 0; }
 };
+
+MFS_NAMESPACE_END
 
 #endif

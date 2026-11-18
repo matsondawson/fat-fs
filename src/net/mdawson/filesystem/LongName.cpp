@@ -1,6 +1,7 @@
 #include "LongName.h"
 
-namespace Mfs {
+MFS_NAMESPACE_BEGIN
+
 	namespace Lfn {
 
 		uint8_t shortNameChecksum(const uint8_t shortName[11]) {
@@ -174,4 +175,5 @@ namespace Mfs {
 		}
 #endif
 	}
-}
+
+MFS_NAMESPACE_END

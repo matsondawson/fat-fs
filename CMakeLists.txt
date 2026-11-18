@@ -26,6 +26,8 @@ endif()
 option(FAT_LONG_FILE_NAMES "Long file name (VFAT) support (defines MFS_LONG_FILE_NAMES)" OFF)
 option(FAT_BLOCK_CACHE "Include the CachedSectorDevice block cache (defines MFS_BLOCK_CACHE)" ON)
 option(FAT_FAT12_16 "FAT12 and FAT16 volumes as well as FAT32 (defines MFS_FAT12_16)" OFF)
+option(FAT_THREAD_LOCAL_ERROR "Make mdError thread local (defines MFS_THREAD_LOCAL_ERROR)" OFF)
+option(FAT_INSTALL "Generate install rules for the library and its CMake package" ${FAT_IS_TOP_LEVEL})
 
 set(FAT_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/src/net/mdawson/filesystem/CachedSectorDevice.cpp
@@ -40,11 +42,16 @@ set(FAT_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/src/net/mdawson/filesystem/Sector.cpp
 )
 
-# fat_library(<target> <long file names ON/OFF> <block cache ON/OFF> <FAT12/16 ON/OFF>)
+# fat_library(<target> <long file names ON/OFF> <block cache ON/OFF> <FAT12/16 ON/OFF> [thread local error ON/OFF])
 function(fat_library target lfn cache fat1216)
   add_library(${target} STATIC ${FAT_SOURCES})
-  target_include_directories(${target} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_include_directories(${target} PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
   target_compile_features(${target} PUBLIC cxx_std_11)
+  if(ARGC GREATER 4 AND ARGV4)
+    target_compile_definitions(${target} PUBLIC MFS_THREAD_LOCAL_ERROR)
+  endif()
   if(lfn)
     target_compile_definitions(${target} PUBLIC MFS_LONG_FILE_NAMES)
   endif()
@@ -76,14 +83,20 @@ function(fat_testsuite target library)
   target_link_libraries(${target} PUBLIC ${library})
 endfunction()
 
+include(GNUInstallDirs)
+
 # ---------------------------------------------------------------------------
-# The driver: portable, no OS dependencies. Link it into firmware or host code
-# and supply a SectorDevice for your storage.
+# The driver: portable, no OS dependencies. Link fat::fat into firmware or host
+# code and supply a SectorDevice for your storage. The real target names start
+# with mfs_ so they don't clash with targets in the project that includes this.
 # ---------------------------------------------------------------------------
-fat_library(fat ${FAT_LONG_FILE_NAMES} ${FAT_BLOCK_CACHE} ${FAT_FAT12_16})
+fat_library(mfs_fat ${FAT_LONG_FILE_NAMES} ${FAT_BLOCK_CACHE} ${FAT_FAT12_16} ${FAT_THREAD_LOCAL_ERROR})
+set_target_properties(mfs_fat PROPERTIES OUTPUT_NAME fat EXPORT_NAME fat)
+add_library(fat::fat ALIAS mfs_fat)
 
 if(NOT FAT_IS_TOP_LEVEL)
-  fat_testsuite(fat_testsuite fat)
+  fat_testsuite(mfs_fat_testsuite mfs_fat)
+  add_library(fat::testsuite ALIAS mfs_fat_testsuite)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -91,24 +104,55 @@ endif()
 # time. Only defined when this directory is added from a pico-sdk project.
 # ---------------------------------------------------------------------------
 if(PICO_SDK_VERSION_STRING)
-  add_library(fat_pico_sd STATIC ${CMAKE_CURRENT_SOURCE_DIR}/platform/pico/PicoSdCard.cpp)
-  target_include_directories(fat_pico_sd PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/platform/pico)
-  target_link_libraries(fat_pico_sd PUBLIC fat hardware_spi hardware_gpio pico_time)
+  add_library(mfs_fat_pico_sd STATIC ${CMAKE_CURRENT_SOURCE_DIR}/platform/pico/PicoSdCard.cpp)
+  target_include_directories(mfs_fat_pico_sd PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/platform/pico)
+  target_link_libraries(mfs_fat_pico_sd PUBLIC mfs_fat hardware_spi hardware_gpio pico_time)
   if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    target_compile_options(fat_pico_sd PRIVATE -Wall -Wextra)
+    target_compile_options(mfs_fat_pico_sd PRIVATE -Wall -Wextra)
   endif()
+  add_library(fat::pico_sd ALIAS mfs_fat_pico_sd)
 endif()
 
 # ---------------------------------------------------------------------------
 # Host only: POSIX device backend (image files, /dev/sdX) and tools.
 # ---------------------------------------------------------------------------
 if(FAT_BUILD_TOOLS OR FAT_BUILD_TESTS)
-  add_library(fat_posix STATIC platform/posix/FileSectorDevice.cpp)
-  target_include_directories(fat_posix PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/platform/posix)
-  target_link_libraries(fat_posix PUBLIC fat)
+  add_library(mfs_fat_posix STATIC platform/posix/FileSectorDevice.cpp)
+  target_include_directories(mfs_fat_posix PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/platform/posix)
+  target_link_libraries(mfs_fat_posix PUBLIC mfs_fat)
+  add_library(fat::posix ALIAS mfs_fat_posix)
 
   add_executable(fatimg tools/fatimg.cpp)
-  target_link_libraries(fatimg PRIVATE fat_posix)
+  target_link_libraries(fatimg PRIVATE mfs_fat_posix)
+endif()
+
+# ---------------------------------------------------------------------------
+# Install: the library, its headers and a CMake package, so that another
+# project can use find_package(fat CONFIG) and link fat::fat. The package
+# carries the MFS_* defines the library was built with.
+# ---------------------------------------------------------------------------
+if(FAT_INSTALL)
+  include(CMakePackageConfigHelpers)
+
+  install(TARGETS mfs_fat EXPORT fatTargets
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
+  install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/src/
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+    FILES_MATCHING PATTERN "*.h")
+  install(EXPORT fatTargets
+    NAMESPACE fat::
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/fat)
+
+  configure_package_config_file(${CMAKE_CURRENT_SOURCE_DIR}/cmake/fatConfig.cmake.in
+    ${CMAKE_CURRENT_BINARY_DIR}/fatConfig.cmake
+    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/fat)
+  write_basic_package_version_file(${CMAKE_CURRENT_BINARY_DIR}/fatConfigVersion.cmake
+    COMPATIBILITY SameMinorVersion)
+  install(FILES
+    ${CMAKE_CURRENT_BINARY_DIR}/fatConfig.cmake
+    ${CMAKE_CURRENT_BINARY_DIR}/fatConfigVersion.cmake
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/fat)
 endif()
 
 if(FAT_BUILD_TESTS)
@@ -126,12 +170,14 @@ if(FAT_BUILD_TESTS)
   endif()
 
   option(FAT_SANITIZE "Build host tests with address/undefined sanitizers" ON)
+  find_package(Threads REQUIRED)
 
   # Every feature combination is built and tested, whatever the options above say.
-  foreach(variant plain lfn cache lfn_cache fat1216 lfn_cache_fat1216)
+  foreach(variant plain lfn cache lfn_cache fat1216 lfn_cache_fat1216 lfn_cache_fat1216_tls)
     set(lfn OFF)
     set(cache OFF)
     set(fat1216 OFF)
+    set(tls OFF)
     if(variant MATCHES "lfn")
       set(lfn ON)
     endif()
@@ -141,11 +187,17 @@ if(FAT_BUILD_TESTS)
     if(variant MATCHES "fat1216")
       set(fat1216 ON)
     endif()
+    if(variant MATCHES "tls")
+      set(tls ON)
+    endif()
 
-    fat_library(fat_${variant} ${lfn} ${cache} ${fat1216})
+    fat_library(fat_${variant} ${lfn} ${cache} ${fat1216} ${tls})
     fat_testsuite(fat_testsuite_${variant} fat_${variant})
     add_executable(fat_tests_${variant} test/host_main.cpp)
     target_link_libraries(fat_tests_${variant} PRIVATE fat_testsuite_${variant})
+    if(tls)
+      target_link_libraries(fat_tests_${variant} PRIVATE Threads::Threads)
+    endif()
     add_test(NAME unit_${variant} COMMAND fat_tests_${variant})
 
     add_library(fat_posix_${variant} STATIC platform/posix/FileSectorDevice.cpp)

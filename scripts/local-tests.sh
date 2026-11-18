@@ -11,8 +11,9 @@
 # working tree clean (so what was tested is exactly the commit).
 #
 # Runs: host tests with gcc and clang (warnings as errors, ctest including the
-# mkfs.fat/mtools/fsck.fat image checks), the Cortex-M0+ and M4 library in
-# every option combination, and the Pico and Pico 2 firmware (pico/pico.sh).
+# mkfs.fat/mtools/fsck.fat image checks), a project using the library through
+# find_package and add_subdirectory, the Cortex-M0+ and M4 library in every
+# option combination, and the Pico and Pico 2 firmware (pico/pico.sh).
 # Needs cmake, ninja, gcc, clang, dosfstools, mtools, arm-none-eabi-gcc, docker
 # and gh.
 set -uo pipefail
@@ -86,12 +87,35 @@ arm() { # cpu lfn cache fat12_16
 		arm-none-eabi-size -t "$dir/libfat.a" | tail -1
 }
 
+# consumer: builds test/consumer against an installed library (find_package)
+# and from source (add_subdirectory), and checks that a program built with
+# different MFS_* macros from the library fails to link
+consumer() {
+	local dir=$out/consumer
+	cmake -S . -B "$dir/lib" -G Ninja -DFAT_BUILD_TESTS=OFF -DFAT_BUILD_TOOLS=OFF -DFAT_LONG_FILE_NAMES=ON -DCMAKE_INSTALL_LIBDIR=lib \
+		-DCMAKE_COMPILE_WARNING_AS_ERROR=ON &&
+		cmake --build "$dir/lib" &&
+		cmake --install "$dir/lib" --prefix "$dir/install" &&
+		cmake -S test/consumer -B "$dir/installed" -G Ninja -DCMAKE_PREFIX_PATH="$PWD/$dir/install" &&
+		cmake --build "$dir/installed" &&
+		"$dir/installed/consumer" &&
+		cmake -S test/consumer -B "$dir/source" -G Ninja -DFAT_SOURCE_DIR="$PWD" &&
+		cmake --build "$dir/source" &&
+		"$dir/source/consumer" || return 1
+	if g++ -std=c++11 -I"$dir/install/include" test/consumer/main.cpp "$dir/install/lib/libfat.a" -o "$dir/mismatch"; then
+		echo "A program built without MFS_LONG_FILE_NAMES linked against a library built with it" >&2
+		return 1
+	fi
+	echo "Mismatched build failed to link, as it should"
+}
+
 firmware() { # board
 	pico/pico.sh --board "$1" build && ! grep -q 'warning:' "$out/firmware-$1.log"
 }
 
 step host-gcc host gcc
 step host-clang host clang
+step consumer consumer
 for cpu in cortex-m0plus cortex-m4; do
 	for lfn in OFF ON; do
 		for cache in OFF ON; do

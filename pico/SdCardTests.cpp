@@ -11,8 +11,7 @@
 #include <stdio.h>
 #include <string.h>
 
-using Mfs::DirectoryListing;
-using Mfs::File;
+using namespace Mfs;
 
 namespace {
 

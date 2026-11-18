@@ -3,6 +3,8 @@
 
 #include "net/mdawson/filesystem/SectorDevice.h"
 
+MFS_NAMESPACE_BEGIN
+
 /**
  * Sparse RAM backed sector device.
  *
@@ -50,5 +52,7 @@ public:
 	virtual md_error_t write(const uint8_t* data, sector_t sector);
 	virtual uint32_t getBytesPerSector() const;
 };
+
+MFS_NAMESPACE_END
 
 #endif
