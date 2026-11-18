@@ -209,6 +209,29 @@ Mfs::Fat fat(partition);
 `begin()` checks that the pins belong to that SPI instance. The card must be
 the only device on its SPI bus.
 
+Reads use one multiple block read (CMD18) that stays open, so a sector read
+after the one before it is just the next block from the card, without a
+command or the card looking it up. Reading another sector, writing, or
+`flush()` closes it. After each sector, DMA reads the next block into the
+driver's buffer while your code works, so reading it is usually just a copy.
+On an RP2040 with a 7.5 GB card at 20.8 MHz, reading 512 KB in order with
+250 us of other work per sector ran at 1720 KB/s with read ahead and 972 KB/s
+without; reading a file through the driver went from 796 KB/s with single
+block reads to 1562 KB/s.
+
+Read ahead uses two DMA channels. `begin()` claims them with
+`dma_claim_unused_channel()`, so they can't clash with other code that claims
+its channels the same way (the pico-sdk's own libraries do), and the destructor
+releases them. If none are free it reads without read ahead
+(`isReadAheadOn()` says which). To choose the channels yourself, claim them
+and pass them to `setDmaChannels(rx, tx)` before `begin()`. The driver polls
+for the DMA to finish instead of using DMA interrupts, so it leaves
+`DMA_IRQ_0`/`DMA_IRQ_1` and their handlers to the rest of the program, and
+the DMA only ever writes into the driver's own buffer. Code that uses fixed
+channel numbers without claiming them can still collide with it: claim them
+(`dma_channel_claim()`) at startup, before `begin()`. `setReadAhead(false)`
+turns read ahead off.
+
 ### Other microcontrollers
 
 Build just the library with the generic toolchain file and link `libfat.a`

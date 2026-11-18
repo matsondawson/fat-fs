@@ -152,6 +152,120 @@ void writeTest(Fat &fat) {
 	mdError = 0;
 }
 
+// Sector hashes from reading one sector at a time, each in its own stream
+const uint32_t STREAM_SECTORS = 128;
+uint32_t g_reference[STREAM_SECTORS];
+
+uint32_t sectorHash(const uint8_t *data) {
+	return hash(2166136261u, data, 512);
+}
+
+// Reads sectors start + order[i] and checks each against the reference
+bool readInOrder(PicoSdCard &card, sector_t start, const uint32_t *order, uint32_t count) {
+	static uint8_t sector[512];
+	for (uint32_t i = 0; i < count; i++) {
+		if (card.read(sector, start + order[i]) || sectorHash(sector) != g_reference[order[i]]) {
+			printf("    sector %lu differs (step %lu)\n", (unsigned long)(start + order[i]), (unsigned long)i);
+			return false;
+		}
+	}
+	return true;
+}
+
+// Reads count sectors from start in order, spending workUs after each as a
+// decoder would, returning KB/s, or 0 on failure
+uint32_t rawSpeed(PicoSdCard &card, sector_t start, uint32_t count, uint32_t workUs) {
+	static uint8_t sector[512];
+	absolute_time_t begin = get_absolute_time();
+	for (uint32_t i = 0; i < count; i++) {
+		if (card.read(sector, start + i)) {
+			return 0;
+		}
+		busy_wait_us_32(workUs);
+	}
+	int64_t us = absolute_time_diff_us(begin, get_absolute_time());
+	return us > 0 ? (uint32_t)((uint64_t)count * 512 * 1000000 / us / 1024) : 0;
+}
+
+// The multiple block read and read ahead give the same data as single reads,
+// whatever order sectors are read in
+void streamTests(PicoSdCard &card, sector_t start) {
+	static uint8_t sector[512];
+	static uint32_t order[STREAM_SECTORS];
+	bool readAhead = card.isReadAheadOn();
+	printf("    read ahead %s\n", readAhead ? "on" : "off (no DMA channels)");
+
+	// Reference: backwards, so each read opens a new stream
+	bool ok = true;
+	for (uint32_t i = STREAM_SECTORS; ok && i-- > 0;) {
+		ok = card.read(sector, start + i) == 0;
+		g_reference[i] = sectorHash(sector);
+	}
+	uint32_t distinct = 0;
+	for (uint32_t i = 0; i < STREAM_SECTORS; i++) {
+		distinct += i == 0 || g_reference[i] != g_reference[i - 1];
+	}
+	check(ok, "stream: read sectors one stream each");
+	printf("    %lu sectors from %lu, %lu changes of content\n", (unsigned long)STREAM_SECTORS,
+	       (unsigned long)start, (unsigned long)distinct);
+
+	for (uint32_t i = 0; i < STREAM_SECTORS; i++) {
+		order[i] = i;
+	}
+	card.resetStats();
+	ok = readInOrder(card, start, order, STREAM_SECTORS);
+	const PicoSdCard::Stats &stats = card.getStats();
+	check(ok && stats.streamStarts == 1, "stream: in order, one stream");
+	if (readAhead) {
+		check(stats.readAheadHits >= STREAM_SECTORS / 2, "stream: in order, read ahead used");
+		printf("    %lu of %lu reads from the read ahead\n", (unsigned long)stats.readAheadHits,
+		       (unsigned long)stats.reads);
+	}
+
+	// Every other sector: the stream moves past the skipped one
+	uint32_t n = 0;
+	for (uint32_t i = 0; i < STREAM_SECTORS; i += 2) {
+		order[n++] = i;
+	}
+	check(readInOrder(card, start, order, n), "stream: every other sector");
+
+	// Runs of 3, jumping about, and the same sector twice
+	n = 0;
+	for (uint32_t run = 0; run < 16; run++) {
+		uint32_t first = (run * 37) % (STREAM_SECTORS - 3);
+		order[n++] = first;
+		order[n++] = first + 1;
+		order[n++] = first + 1;
+		order[n++] = first + 2;
+	}
+	check(readInOrder(card, start, order, n), "stream: short runs and repeats");
+
+	// flush() closes the stream, and reading carries on afterwards
+	check(card.flush() == 0, "stream: flush closes the stream");
+	order[0] = 5;
+	order[1] = 6;
+	check(readInOrder(card, start, order, 2), "stream: read after flush");
+
+	// Without read ahead
+	card.setReadAhead(false);
+	for (uint32_t i = 0; i < STREAM_SECTORS; i++) {
+		order[i] = i;
+	}
+	check(readInOrder(card, start, order, STREAM_SECTORS), "stream: in order without read ahead");
+	// With 250 us of other work per sector, as a decoder needs, read ahead
+	// overlaps the transfer with the work
+	for (uint32_t workUs = 0; workUs <= 250; workUs += 250) {
+		card.setReadAhead(false);
+		uint32_t slow = rawSpeed(card, start, 1024, workUs);
+		card.setReadAhead(readAhead);
+		uint32_t fast = rawSpeed(card, start, 1024, workUs);
+		check(slow && fast, "stream: 512 KB of sectors");
+		printf("    512 KB, %lu us work per sector: %lu KB/s without read ahead, %lu KB/s with\n",
+		       (unsigned long)workUs, (unsigned long)slow, (unsigned long)fast);
+	}
+	card.flush();
+}
+
 } // namespace
 
 int runSdCardTests(PicoSdCard &card, bool write) {
@@ -194,6 +308,27 @@ int runSdCardTests(PicoSdCard &card, bool write) {
 		delete fallback;
 		mdError = 0;
 		return g_failures;
+	}
+
+	{
+		// Sectors well into the data region, likely file contents: the volume's
+		// first data sector, from its boot sector, plus 1000
+		sector_t volume = fallback ? 0 : partition.getSectorOffset();
+		sector_t start = volume;
+		if (card.read(sector, volume) == 0) {
+			uint32_t reserved = sector[14] | sector[15] << 8;
+			uint32_t fats = sector[16];
+			uint32_t fatSize = sector[22] | sector[23] << 8;
+			if (fatSize == 0) {
+				fatSize = sector[36] | sector[37] << 8 | sector[38] << 16 | (uint32_t)sector[39] << 24;
+			}
+			uint32_t rootSectors = ((sector[17] | sector[18] << 8) * 32 + 511) / 512;
+			start = volume + reserved + fats * fatSize + rootSectors + 1000;
+		}
+		if (start + 2048 > card.getSectorCount()) {
+			start = volume;
+		}
+		streamTests(card, start);
 	}
 
 	char firstFile[256] = "";
