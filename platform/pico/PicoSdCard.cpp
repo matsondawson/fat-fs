@@ -2,8 +2,11 @@
 
 #include "net/mdawson/filesystem/GlobalError.h"
 
+#include "hardware/dma.h"
 #include "hardware/gpio.h"
 #include "pico/time.h"
+
+#include <string.h>
 
 MFS_NAMESPACE_BEGIN
 
@@ -12,9 +15,10 @@ namespace {
 const uint8_t CMD0_GO_IDLE = 0;
 const uint8_t CMD8_SEND_IF_COND = 8;
 const uint8_t CMD9_SEND_CSD = 9;
+const uint8_t CMD12_STOP_TRANSMISSION = 12;
 const uint8_t CMD13_SEND_STATUS = 13;
 const uint8_t CMD16_SET_BLOCKLEN = 16;
-const uint8_t CMD17_READ_SINGLE_BLOCK = 17;
+const uint8_t CMD18_READ_MULTIPLE_BLOCK = 18;
 const uint8_t CMD24_WRITE_BLOCK = 24;
 const uint8_t CMD55_APP_CMD = 55;
 const uint8_t CMD58_READ_OCR = 58;
@@ -32,6 +36,14 @@ const uint32_t READ_TIMEOUT_MS = 300;
 const uint32_t WRITE_TIMEOUT_MS = 600;
 const uint32_t INIT_TIMEOUT_MS = 2000;
 
+// Bytes to wait for the next block's start token before giving up on reading it
+// ahead. Mid-stream the token comes quickly.
+const uint32_t TOKEN_WAIT_BYTES = 64;
+const uint32_t BLOCK_AND_CRC = 514;
+
+// What the read ahead's transmit DMA sends, in RAM rather than flash
+uint8_t s_ones = 0xFF;
+
 // Which SPI instance and function a GPIO has: the pattern repeats every 8 pins,
 // SPI0 then SPI1, on both the RP2040 and RP2350.
 enum SpiFunction { SPI_RX = 0, SPI_CSN = 1, SPI_SCK = 2, SPI_TX = 3 };
@@ -48,7 +60,42 @@ bool pinIs(uint32_t pin, spi_inst_t *spi, SpiFunction function) {
 PicoSdCard::PicoSdCard(spi_inst_t *spi, uint32_t sck, uint32_t mosi, uint32_t miso, uint32_t cs, uint32_t hz)
 	: m_spi(spi), m_sck(sck), m_mosi(mosi), m_miso(miso), m_cs(cs), m_hz(hz), m_actualHz(0),
 	  m_detectPin(-1), m_detectActiveLow(true),
-	  m_ready(false), m_blockAddressed(false), m_sectorCount(0), m_lastError("") {
+	  m_ready(false), m_blockAddressed(false), m_sectorCount(0), m_lastError(""),
+	  m_streaming(false), m_nextSector(0), m_pendingToken(0xFF),
+	  m_readAheadWanted(true), m_readingAhead(false), m_rxChannel(-1), m_txChannel(-1), m_claimedChannels(false) {
+	resetStats();
+}
+
+PicoSdCard::~PicoSdCard() {
+	idle();
+	releaseChannels();
+}
+
+void PicoSdCard::resetStats() {
+	m_stats.reads = 0;
+	m_stats.streamStarts = 0;
+	m_stats.readAheadHits = 0;
+}
+
+void PicoSdCard::setDmaChannels(int rx, int tx) {
+	if (m_readingAhead) {
+		waitReadAhead();
+	}
+	releaseChannels();
+	if (rx >= 0 && tx >= 0) {
+		m_rxChannel = rx;
+		m_txChannel = tx;
+	}
+}
+
+void PicoSdCard::releaseChannels() {
+	if (m_claimedChannels) {
+		dma_channel_unclaim((uint)m_rxChannel);
+		dma_channel_unclaim((uint)m_txChannel);
+	}
+	m_claimedChannels = false;
+	m_rxChannel = -1;
+	m_txChannel = -1;
 }
 
 void PicoSdCard::setCardDetect(int pin, bool activeLow) {
@@ -175,6 +222,12 @@ bool PicoSdCard::readCapacity() {
 }
 
 md_error_t PicoSdCard::begin() {
+	// Any stream is abandoned: CMD0 below resets the card whatever it was doing
+	if (m_readingAhead) {
+		waitReadAhead();
+	}
+	m_streaming = false;
+	m_pendingToken = 0xFF;
 	m_ready = false;
 	m_lastError = "";
 	m_sectorCount = 0;
@@ -292,12 +345,35 @@ md_error_t PicoSdCard::begin() {
 	}
 
 	m_actualHz = spi_set_baudrate(m_spi, m_hz);
+
+	if (m_readAheadWanted && m_rxChannel < 0) {
+		// Without two free channels, read without read ahead
+		int rx = dma_claim_unused_channel(false);
+		int tx = rx >= 0 ? dma_claim_unused_channel(false) : -1;
+		if (tx >= 0) {
+			m_rxChannel = rx;
+			m_txChannel = tx;
+			m_claimedChannels = true;
+		} else if (rx >= 0) {
+			dma_channel_unclaim((uint)rx);
+		}
+	}
+
 	m_ready = true;
 	return 0;
 }
 
 md_error_t PicoSdCard::checkAccess(sector_t sector) {
 	if (m_detectPin >= 0 && !isCardPresent()) {
+		// Nothing to stop: let any read ahead run out and drop the stream
+		if (m_readingAhead) {
+			waitReadAhead();
+		}
+		if (m_streaming) {
+			m_streaming = false;
+			m_pendingToken = 0xFF;
+			deselect();
+		}
 		m_ready = false;
 		return fail(SectorDevice_notPresent, "Card removed");
 	}
@@ -310,16 +386,142 @@ md_error_t PicoSdCard::checkAccess(sector_t sector) {
 	return 0;
 }
 
+// Reads the next block of an open read: its start token, the data and the CRC
+bool PicoSdCard::readBlock(uint8_t *buffer) {
+	absolute_time_t deadline = make_timeout_time_ms(READ_TIMEOUT_MS);
+	uint8_t token = m_pendingToken;
+	m_pendingToken = 0xFF;
+	while (token == 0xFF && (token = transfer()) == 0xFF) {
+		if (time_reached(deadline)) {
+			return false;
+		}
+	}
+	if (token != DATA_START_TOKEN) {
+		return false;
+	}
+	spi_read_blocking(m_spi, 0xFF, buffer, 512);
+	// The CRC, not checked
+	transfer();
+	transfer();
+	return true;
+}
+
+// Stops a multiple block read and deselects the card. @return whether the card stopped.
+bool PicoSdCard::stopStream() {
+	m_streaming = false;
+	m_pendingToken = 0xFF;
+	// Sent straight away: the card is sending, so it isn't busy
+	const uint8_t frame[6] = {0x40 | CMD12_STOP_TRANSMISSION, 0, 0, 0, 0, 0x01};
+	spi_write_blocking(m_spi, frame, sizeof(frame));
+	// The byte after the command is still from the stream
+	transfer();
+	uint8_t response = 0xFF;
+	for (int i = 0; i < 10 && (response & 0x80); i++) {
+		response = transfer();
+	}
+	bool stopped = response == 0 && waitReady(WRITE_TIMEOUT_MS);
+	deselect();
+	return stopped;
+}
+
+// Starts DMA reading block m_nextSector, if its start token arrives soon
+void PicoSdCard::startReadAhead() {
+	uint8_t token = 0xFF;
+	for (uint32_t i = 0; i < TOKEN_WAIT_BYTES && token == 0xFF; i++) {
+		token = transfer();
+	}
+	if (token != DATA_START_TOKEN) {
+		// Not there yet, or an error token, which the next read of it then reports
+		m_pendingToken = token;
+		return;
+	}
+	dma_channel_config rx = dma_channel_get_default_config((uint)m_rxChannel);
+	channel_config_set_transfer_data_size(&rx, DMA_SIZE_8);
+	channel_config_set_read_increment(&rx, false);
+	channel_config_set_write_increment(&rx, true);
+	channel_config_set_dreq(&rx, spi_get_dreq(m_spi, false));
+	dma_channel_configure((uint)m_rxChannel, &rx, m_readAhead, &spi_get_hw(m_spi)->dr, BLOCK_AND_CRC, false);
+	dma_channel_config tx = dma_channel_get_default_config((uint)m_txChannel);
+	channel_config_set_transfer_data_size(&tx, DMA_SIZE_8);
+	channel_config_set_read_increment(&tx, false);
+	channel_config_set_write_increment(&tx, false);
+	channel_config_set_dreq(&tx, spi_get_dreq(m_spi, true));
+	dma_channel_configure((uint)m_txChannel, &tx, &spi_get_hw(m_spi)->dr, &s_ones, BLOCK_AND_CRC, false);
+	dma_start_channel_mask((1u << m_rxChannel) | (1u << m_txChannel));
+	m_readingAhead = true;
+}
+
+// Waits for the read ahead's DMA, which leaves the stream at the end of a block
+void PicoSdCard::waitReadAhead() {
+	dma_channel_wait_for_finish_blocking((uint)m_txChannel);
+	dma_channel_wait_for_finish_blocking((uint)m_rxChannel);
+	// The last byte may still be shifting
+	while (spi_is_busy(m_spi)) {
+	}
+	m_readingAhead = false;
+}
+
+bool PicoSdCard::idle() {
+	if (m_readingAhead) {
+		waitReadAhead();
+	}
+	return m_streaming ? stopStream() : true;
+}
+
+md_error_t PicoSdCard::flush() {
+	if (!idle()) {
+		return fail(SectorDevice_ioError, "Card didn't stop reading (CMD12)");
+	}
+	return 0;
+}
+
 md_error_t PicoSdCard::read(uint8_t *data, sector_t sector) {
 	md_error_t error = checkAccess(sector);
 	if (error) {
 		return error;
 	}
-	uint8_t response = command(CMD17_READ_SINGLE_BLOCK, m_blockAddressed ? sector : sector * 512);
-	bool ok = response == 0 && readData(data, 512, READ_TIMEOUT_MS);
-	deselect();
-	if (!ok) {
-		return fail(SectorDevice_ioError, response == 0 ? "Read data didn't arrive (CMD17)" : "Read refused (CMD17)");
+	m_stats.reads++;
+	bool copied = false;
+	if (m_readingAhead) {
+		waitReadAhead();
+		if (sector == m_nextSector) {
+			// The CRC isn't checked
+			memcpy(data, m_readAhead, 512);
+			m_stats.readAheadHits++;
+			copied = true;
+		} else {
+			// The stream moved on a block, as if it had been read
+			m_nextSector++;
+			if (m_nextSector >= m_sectorCount) {
+				// At the card's end: close the stream, whatever the card says
+				stopStream();
+			}
+		}
+	}
+	if (!copied) {
+		if (m_streaming && sector != m_nextSector && !stopStream()) {
+			return fail(SectorDevice_ioError, "Card didn't stop reading (CMD12)");
+		}
+		if (!m_streaming) {
+			uint8_t response = command(CMD18_READ_MULTIPLE_BLOCK, m_blockAddressed ? sector : sector * 512);
+			if (response != 0) {
+				deselect();
+				return fail(SectorDevice_ioError, "Read refused (CMD18)");
+			}
+			m_streaming = true;
+			m_stats.streamStarts++;
+		}
+		if (!readBlock(data)) {
+			stopStream();
+			return fail(SectorDevice_ioError, "Read data didn't arrive (CMD18)");
+		}
+	}
+	m_nextSector = sector + 1;
+	if (m_nextSector >= m_sectorCount) {
+		// Don't let the card read past its end
+		stopStream();
+	} else if (isReadAheadOn()) {
+		startReadAhead();
 	}
 	m_lastError = "";
 	return 0;
@@ -329,6 +531,9 @@ md_error_t PicoSdCard::write(const uint8_t *data, sector_t sector) {
 	md_error_t error = checkAccess(sector);
 	if (error) {
 		return error;
+	}
+	if (!idle()) {
+		return fail(SectorDevice_ioError, "Card didn't stop reading (CMD12)");
 	}
 	uint8_t response = command(CMD24_WRITE_BLOCK, m_blockAddressed ? sector : sector * 512);
 	if (response != 0) {
